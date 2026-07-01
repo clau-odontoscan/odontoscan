@@ -2,30 +2,22 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 
-# Dependências do sistema
 RUN apt-get update && apt-get install -y \
-    python3 python3-pip python3-dev \
+    python3 python3-pip \
     colmap \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    libsm6 libxext6 libxrender-dev \
-    wget curl git \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala dependências Python
 WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copia o projeto
 COPY . .
+RUN mkdir -p /data /app/uploads /app/scans
 
-# Cria pastas necessárias
-RUN mkdir -p /app/uploads /app/scans /data
+EXPOSE 8080
 
-# Porta
-EXPOSE 5050
-
-# Inicia com gunicorn
-CMD ["gunicorn", "--worker-class", "eventlet", "-w", "1", "--bind", "0.0.0.0:5050", "--timeout", "300", "app:app"]
+CMD gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT --timeout 120 app:app

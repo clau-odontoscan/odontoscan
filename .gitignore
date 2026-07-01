@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+uploads/
+scans/
+/data/
+*.db
+*.stl
+*.ply
+result.json
+.env
+venv/
+.venv/
+node_modules/
+*.log

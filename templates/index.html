@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>OdontoScan 3D</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+
+/* ── TOKENS ── */
+:root {
+  --ink:    #0a0c12;
+  --ink2:   #0f1219;
+  --ink3:   #141820;
+  --ink4:   #1a2030;
+  --line:   #1e2535;
+  --line2:  #252e42;
+  --teal:   #00d4b4;
+  --teal2:  #00a896;
+  --teal3:  rgba(0,212,180,.1);
+  --teal4:  rgba(0,212,180,.06);
+  --gold:   #e8bc4e;
+  --red:    #e05555;
+  --red2:   rgba(224,85,85,.1);
+  --blue:   #4a8fff;
+  --purple: #a855f7;
+  --yellow: #f0c040;
+  --text:   #edf0f8;
+  --muted:  #4a5570;
+  --muted2: #7080a0;
+  --r:      12px;
+  --r2:     9px;
+  --r3:     7px;
+}
+
+/* ── RESET ── */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent }
+html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); color:var(--text); font-family:'Inter',sans-serif; font-size:14px }
+::-webkit-scrollbar { width:3px } ::-webkit-scrollbar-thumb { background:var(--line2); border-radius:2px }
+
+/* ══════════════════════════════════════
+   DESKTOP LAYOUT
+══════════════════════════════════════ */
+.app { display:grid; grid-template-rows:54px 1fr; height:100vh }
+
+/* ── TOPBAR ── */
+.topbar {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 20px; background:var(--ink2); border-bottom:1px solid var(--line);
+  z-index:100; gap:12px;
+}
+.logo {
+  display:flex; align-items:center; gap:10px;
+  font-family:'Space Grotesk',sans-serif; font-size:1rem; font-weight:700;
+  letter-spacing:-.02em; white-space:nowrap; flex-shrink:0;
+}
+.logo-badge {
+  width:32px; height:32px; border-radius:9px; flex-shrink:0;
+  background:linear-gradient(135deg,var(--teal),var(--teal2));
+  display:flex; align-items:center; justify-content:center; font-size:.9rem;
+}
+.logo em { color:var(--teal); font-style:normal }
+
+.tabs { display:flex; gap:3px; flex:1; justify-content:center }
+.tab {
+  padding:5px 14px; border-radius:var(--r3); font-size:.75rem; font-weight:600;
+  cursor:pointer; color:var(--muted2); border:1px solid transparent;
+  transition:all .15s; white-space:nowrap; touch-action:manipulation;
+}
+.tab:hover { color:var(--text); background:var(--ink3) }
+.tab.active { color:var(--teal); background:var(--teal4); border-color:rgba(0,212,180,.2) }
+
+.patient-pill {
+  background:var(--ink3); border:1px solid var(--line2); border-radius:20px;
+  padding:4px 12px 4px 6px; display:flex; align-items:center; gap:7px;
+  font-size:.72rem; cursor:pointer; white-space:nowrap; flex-shrink:0;
+  touch-action:manipulation; transition:border-color .15s;
+}
+.patient-pill:hover { border-color:var(--teal) }
+.p-av {
+  width:22px; height:22px; border-radius:50%; flex-shrink:0;
+  background:linear-gradient(135deg,var(--teal),var(--blue));
+  display:flex; align-items:center; justify-content:center;
+  font-size:.6rem; font-weight:700; color:var(--ink);
+}
+.p-name { font-weight:600 }
+
+/* ── BODY ── */
+.body {
+  display:grid;
+  grid-template-columns:260px 1fr 300px;
+  height:calc(100vh - 54px);
+  overflow:hidden;
+}
+
+/* ══════════════════════════════════════
+   PAINÉIS
+══════════════════════════════════════ */
+.panel {
+  background:var(--ink2); display:flex; flex-direction:column;
+  overflow-y:auto; overflow-x:hidden;
+}
+.panel.left { border-right:1px solid var(--line) }
+.panel.right { border-left:1px solid var(--line) }
+
+.psec { padding:14px 16px; border-bottom:1px solid var(--line) }
+.psec:last-child { border-bottom:none; flex:1 }
+.psec-title {
+  font-size:.6rem; font-weight:700; text-transform:uppercase;
+  letter-spacing:.1em; color:var(--muted); margin-bottom:11px;
+}
+
+/* ── CÂMERA ── */
+.cam-wrap {
+  position:relative; border-radius:var(--r2); overflow:hidden;
+  background:#000; aspect-ratio:4/3; border:1px solid var(--line2);
+}
+#camVideo { width:100%; height:100%; object-fit:cover; display:block }
+.cam-hud { position:absolute; inset:0; pointer-events:none }
+.cam-corner { position:absolute; width:14px; height:14px; border-color:var(--teal); border-style:solid; opacity:.7 }
+.cam-corner.tl { top:7px; left:7px; border-width:2px 0 0 2px }
+.cam-corner.tr { top:7px; right:7px; border-width:2px 2px 0 0 }
+.cam-corner.bl { bottom:7px; left:7px; border-width:0 0 2px 2px }
+.cam-corner.br { bottom:7px; right:7px; border-width:0 2px 2px 0 }
+.cam-cross { position:absolute; inset:0; display:flex; align-items:center; justify-content:center }
+.cam-cross::before, .cam-cross::after { content:''; position:absolute; background:rgba(0,212,180,.25) }
+.cam-cross::before { width:1px; height:30% }
+.cam-cross::after { width:30%; height:1px }
+.cam-rec { position:absolute; top:8px; right:8px; width:8px; height:8px; border-radius:50%; background:var(--red); display:none }
+.cam-rec.on { display:block; animation:pulse-red 1s infinite }
+@keyframes pulse-red { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.3;transform:scale(.7)} }
+.cam-fps {
+  position:absolute; bottom:8px; left:8px;
+  background:rgba(0,0,0,.75); color:var(--teal);
+  font-size:.65rem; font-weight:700; padding:2px 8px; border-radius:10px;
+  backdrop-filter:blur(4px);
+}
+.cam-counter {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  font-family:'Space Grotesk',sans-serif; font-size:2rem; font-weight:700;
+  color:var(--teal); opacity:0; transition:opacity .1s; pointer-events:none;
+  text-shadow:0 0 20px rgba(0,212,180,.5);
+}
+.cam-counter.flash { opacity:1 }
+
+.qual-row { display:flex; justify-content:space-between; font-size:.7rem; margin:8px 0 4px; color:var(--muted) }
+.qual-row strong { color:var(--text) }
+.qual-bar { height:3px; background:var(--line2); border-radius:2px; overflow:hidden }
+.qual-fill { height:100%; background:linear-gradient(90deg,var(--teal),var(--gold)); width:0%; transition:width .3s }
+
+/* ── BOTÕES ── */
+.btn {
+  width:100%; padding:10px; border-radius:var(--r2); border:none;
+  font-family:'Inter',sans-serif; font-size:.8rem; font-weight:600;
+  cursor:pointer; transition:all .15s; display:flex; align-items:center;
+  justify-content:center; gap:7px; touch-action:manipulation;
+}
+.btn:disabled { opacity:.3; cursor:not-allowed }
+.btn:active:not(:disabled) { transform:scale(.97) }
+.btn-teal { background:linear-gradient(135deg,var(--teal),var(--teal2)); color:var(--ink) }
+.btn-teal:not(:disabled):hover { filter:brightness(1.08) }
+.btn-red { background:var(--red2); color:var(--red); border:1px solid rgba(224,85,85,.25) }
+.btn-red:not(:disabled):hover { background:rgba(224,85,85,.18) }
+.btn-gold { background:linear-gradient(135deg,var(--gold),#c99a28); color:var(--ink) }
+.btn-gold:not(:disabled):hover { filter:brightness(1.08) }
+.btn-ghost { background:var(--ink3); color:var(--text); border:1px solid var(--line2) }
+.btn-ghost:not(:disabled):hover { border-color:var(--teal); color:var(--teal) }
+.btns { display:flex; flex-direction:column; gap:8px }
+
+/* ── PROGRESSO ── */
+.prog { display:none; margin-top:8px }
+.prog.show { display:block }
+.prog-track { height:5px; background:var(--line2); border-radius:3px; overflow:hidden; margin-bottom:6px }
+.prog-fill { height:100%; background:linear-gradient(90deg,var(--teal),var(--gold)); width:0%; transition:width .5s ease }
+.prog-msg { font-size:.7rem; color:var(--muted); text-align:center }
+
+/* ── GUIA ── */
+.guide { background:var(--ink3); border:1px solid var(--line2); border-radius:var(--r2); padding:12px 13px }
+.guide-title { font-size:.72rem; font-weight:600; color:var(--teal); margin-bottom:9px }
+.guide ol { list-style:none; display:flex; flex-direction:column; gap:6px }
+.guide li { display:flex; gap:8px; font-size:.7rem; color:var(--muted); line-height:1.4 }
+.guide-num {
+  min-width:16px; height:16px; border-radius:50%; background:var(--teal4);
+  color:var(--teal); font-size:.6rem; font-weight:700;
+  display:flex; align-items:center; justify-content:center; flex-shrink:0; margin-top:1px;
+}
+
+/* ── SCAN LIST ── */
+.scan-item {
+  background:var(--ink3); border:1px solid var(--line); border-radius:var(--r3);
+  padding:9px 11px; cursor:pointer; transition:border-color .15s; margin-bottom:6px;
+}
+.scan-item:hover, .scan-item.active { border-color:var(--teal) }
+.scan-item.active { background:var(--teal4) }
+.si-name { font-size:.8rem; font-weight:600 }
+.si-meta { font-size:.68rem; color:var(--muted); margin-top:2px }
+.si-pts { font-size:.65rem; color:var(--teal); font-weight:600; margin-top:3px }
+
+/* ── PAINEL DIREITO ── */
+.treat-grid { display:grid; grid-template-columns:1fr 1fr; gap:7px }
+.tc {
+  background:var(--ink3); border:1px solid var(--line); border-radius:var(--r2);
+  padding:11px 9px; cursor:pointer; transition:all .18s; text-align:center;
+  touch-action:manipulation;
+}
+.tc:active { transform:scale(.96) }
+.tc-icon { font-size:1.4rem; margin-bottom:4px }
+.tc-name { font-size:.72rem; font-weight:600 }
+.tc-desc { font-size:.6rem; color:var(--muted); margin-top:2px; line-height:1.3 }
+.tc.carie  { border-color:rgba(224,85,85,.25)  } .tc.carie.active,.tc.carie:hover  { background:rgba(224,85,85,.1);  border-color:var(--red)    }
+.tc.coroa  { border-color:rgba(232,188,78,.25) } .tc.coroa.active,.tc.coroa:hover  { background:rgba(232,188,78,.1); border-color:var(--gold)   }
+.tc.implante{ border-color:rgba(74,143,255,.25)} .tc.implante.active,.tc.implante:hover{ background:rgba(74,143,255,.1);border-color:var(--blue)  }
+.tc.canal  { border-color:rgba(168,85,247,.25) } .tc.canal.active,.tc.canal:hover  { background:rgba(168,85,247,.1); border-color:var(--purple) }
+.tc.resina { border-color:rgba(0,212,180,.25)  } .tc.resina.active,.tc.resina:hover { background:var(--teal4);       border-color:var(--teal)   }
+.tc.limpeza{ border-color:rgba(240,192,64,.25) } .tc.limpeza.active,.tc.limpeza:hover{ background:rgba(240,192,64,.1);border-color:var(--yellow) }
+
+/* ── DENTE SELECIONADO ── */
+.tooth-card { background:var(--ink3); border:1px solid var(--line2); border-radius:var(--r2); padding:12px; margin-bottom:9px }
+.tc-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:9px }
+.tc-num { font-family:'Space Grotesk',sans-serif; font-size:1.05rem; font-weight:700; color:var(--teal) }
+.tc-name-label { font-size:.68rem; color:var(--muted) }
+.tc-status { font-size:.64rem; padding:2px 9px; border-radius:10px; font-weight:600 }
+.tc-status.ok { background:rgba(0,212,180,.12); color:var(--teal) }
+.tc-status.warn { background:var(--red2); color:var(--red) }
+.faces-label { font-size:.67rem; color:var(--muted); margin-bottom:7px; font-weight:600 }
+.faces { display:grid; grid-template-columns:repeat(5,1fr); gap:4px }
+.face {
+  padding:5px 3px; border-radius:6px; border:1px solid var(--line2);
+  background:var(--ink3); font-size:.6rem; font-weight:600; color:var(--muted2);
+  cursor:pointer; text-align:center; transition:all .15s; touch-action:manipulation;
+}
+.face.active { background:var(--teal4); border-color:var(--teal); color:var(--teal) }
+.face.affected { background:var(--red2); border-color:var(--red); color:var(--red) }
+.notes {
+  width:100%; background:var(--ink3); border:1px solid var(--line2); border-radius:var(--r3);
+  padding:9px 11px; color:var(--text); font-family:'Inter',sans-serif; font-size:.76rem;
+  resize:none; outline:none; min-height:70px; transition:border-color .2s;
+}
+.notes:focus { border-color:var(--teal) }
+.notes::placeholder { color:var(--muted) }
+
+/* ── PATIENT INFO ── */
+.pinfo { background:var(--ink3); border:1px solid var(--line2); border-radius:var(--r2); padding:11px 13px; margin-bottom:9px }
+.pinfo-name { font-size:.9rem; font-weight:600 }
+.pinfo-sub { font-size:.7rem; color:var(--muted); margin-top:2px }
+.pinfo-edit { font-size:.68rem; color:var(--teal); cursor:pointer; margin-top:6px; display:inline-block }
+
+/* ══════════════════════════════════════
+   CENTER — VIEWER 3D
+══════════════════════════════════════ */
+.center {
+  position:relative; overflow:hidden;
+  background:radial-gradient(ellipse at 50% 35%, #0d1520 0%, var(--ink) 70%);
+}
+#c3d { width:100%; height:100%; display:block; cursor:grab; touch-action:none }
+#c3d:active { cursor:grabbing }
+
+/* Placeholder */
+.ph {
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:14px; pointer-events:none;
+}
+.ph-icon { font-size:4rem; opacity:.07 }
+.ph-text { color:var(--muted); font-size:.85rem; text-align:center; max-width:250px; line-height:1.7; opacity:.6 }
+.ph-text strong { color:var(--muted2) }
+
+/* Info overlay */
+.vinfo { position:absolute; top:14px; left:14px; background:rgba(10,12,18,.88); border:1px solid var(--line2); border-radius:var(--r2); padding:9px 13px; backdrop-filter:blur(8px); display:none }
+.vinfo.show { display:block }
+.vinfo-title { font-family:'Space Grotesk',sans-serif; font-size:.9rem; font-weight:600 }
+.vinfo-sub { font-size:.68rem; color:var(--muted); margin-top:2px }
+
+/* Action buttons overlay */
+.vactions { position:absolute; top:14px; right:14px; display:flex; gap:7px }
+.vact {
+  background:rgba(10,12,18,.88); border:1px solid var(--line2); border-radius:var(--r3);
+  color:var(--text); font-size:.72rem; font-weight:600; padding:6px 13px;
+  cursor:pointer; transition:all .15s; backdrop-filter:blur(8px);
+  display:none; align-items:center; gap:5px; white-space:nowrap;
+}
+.vact.show { display:flex }
+.vact:hover { border-color:var(--teal); color:var(--teal) }
+.vact.gold:hover { border-color:var(--gold); color:var(--gold) }
+
+/* Hint */
+.vhint {
+  position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+  background:rgba(10,12,18,.7); border:1px solid var(--line); border-radius:var(--r3);
+  padding:5px 14px; font-size:.68rem; color:var(--muted); backdrop-filter:blur(6px);
+  white-space:nowrap; pointer-events:none;
+}
+
+/* Zoom controls */
+.vzoom { position:absolute; bottom:14px; right:14px; display:flex; flex-direction:column; gap:6px }
+.vz {
+  width:32px; height:32px; background:rgba(10,12,18,.88); border:1px solid var(--line2);
+  border-radius:var(--r3); color:var(--muted); font-size:.85rem;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; transition:all .15s; backdrop-filter:blur(6px);
+}
+.vz:hover { border-color:var(--teal); color:var(--teal) }
+
+/* Odontogram overlay */
+.odo-overlay { position:absolute; inset:0; background:var(--ink); display:none; flex-direction:column; overflow:hidden; z-index:5 }
+.odo-overlay.show { display:flex }
+.odo-header { display:flex; align-items:center; justify-content:space-between; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; gap:8px }
+.odo-title { font-family:'Space Grotesk',sans-serif; font-size:.9rem; font-weight:600 }
+.odo-legend { display:flex; gap:10px; flex-wrap:wrap }
+.leg { display:flex; align-items:center; gap:4px; font-size:.64rem; color:var(--muted) }
+.leg-dot { width:7px; height:7px; border-radius:50% }
+#odoCanvas { flex:1; width:100%; display:block; cursor:pointer; touch-action:none }
+.odo-tip { text-align:center; padding:6px; font-size:.68rem; color:var(--muted); border-top:1px solid var(--line) }
+
+/* ══════════════════════════════════════
+   MOBILE LAYOUT
+══════════════════════════════════════ */
+.mobile-nav { display:none }
+
+@media (max-width:768px) {
+  /* Topbar mobile — só logo e avatar */
+  .tabs { display:none }
+  .p-name { display:none }
+  .patient-pill { padding:4px 7px }
+  .logo em { display:none }
+
+  /* Layout mobile: câmera compacta + viewer + nav */
+  .body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr 60px;
+  }
+
+  /* Painel esquerdo — compacto no topo */
+  .panel.left {
+    grid-row:1; grid-column:1;
+    border-right:none; border-bottom:1px solid var(--line);
+    max-height:300px; overflow-y:auto; flex-shrink:0;
+  }
+
+  /* Esconde seções desnecessárias no mobile */
+  .panel.left .guide,
+  .panel.left .psec:nth-child(4) { display:none }
+
+  /* Câmera 16:9 no mobile */
+  .cam-wrap { aspect-ratio:16/9 }
+
+  /* Viewer ocupa espaço restante */
+  .center { grid-row:2; grid-column:1 }
+
+  /* Painel direito — drawer de baixo */
+  .panel.right {
+    display:none;
+    position:fixed; inset:auto 0 60px 0;
+    z-index:50; max-height:70vh;
+    border-left:none; border-top:1px solid var(--line);
+    border-radius:16px 16px 0 0;
+    overflow-y:auto;
+    box-shadow:0 -8px 40px rgba(0,0,0,.6);
+  }
+  .panel.right.open { display:flex }
+
+  /* Odontograma — fullscreen */
+  .odo-overlay { position:fixed !important; inset:54px 0 60px 0 !important; z-index:40 !important }
+
+  /* Info e ações menores no mobile */
+  .vinfo { top:8px; left:8px; padding:7px 10px }
+  .vinfo-title { font-size:.8rem }
+  .vactions { top:8px; right:8px; gap:5px }
+  .vact { font-size:.68rem; padding:5px 10px }
+  .vhint { bottom:8px; font-size:.62rem }
+
+  /* Nav inferior */
+  .mobile-nav {
+    display:grid; grid-template-columns:repeat(4,1fr);
+    grid-row:3; grid-column:1;
+    background:var(--ink2); border-top:1px solid var(--line);
+    z-index:30;
+  }
+  .mnav {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:3px; padding:8px 4px; cursor:pointer; color:var(--muted);
+    transition:color .15s; touch-action:manipulation; border:none;
+    background:none; font-family:'Inter',sans-serif;
+  }
+  .mnav.active { color:var(--teal) }
+  .mnav-icon { font-size:1.2rem }
+  .mnav-label { font-size:.58rem; font-weight:600 }
+
+  /* Botões maiores no mobile */
+  .btn { padding:13px; font-size:.85rem }
+  .psec { padding:12px 14px }
+}
+
+/* ══════════════════════════════════════
+   PRESENTATION MODE
+══════════════════════════════════════ */
+.pres { position:fixed; inset:0; background:#000; z-index:200; display:none; flex-direction:column }
+.pres.show { display:flex }
+.pres-top {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px 24px; background:rgba(0,0,0,.6); border-bottom:1px solid rgba(255,255,255,.08);
+}
+.pres-logo { font-family:'Space Grotesk',sans-serif; font-size:1.1rem; font-weight:700; color:var(--teal) }
+.pres-patient { font-size:.82rem; color:rgba(255,255,255,.45) }
+.pres-close {
+  background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.12);
+  border-radius:var(--r3); padding:7px 16px; color:rgba(255,255,255,.6);
+  font-size:.75rem; cursor:pointer; font-family:'Inter',sans-serif;
+  transition:all .15s;
+}
+.pres-close:hover { background:rgba(255,255,255,.15); color:#fff }
+.pres-body { flex:1; display:grid; overflow:hidden }
+@media(min-width:600px) { .pres-body { grid-template-columns:1fr 360px } }
+.pres-viewer { position:relative; background:radial-gradient(ellipse at center,#0d1828,#000) }
+#presCanvas { width:100%; height:100%; display:block; touch-action:none }
+.pres-panel {
+  background:rgba(10,12,18,.95); border-left:1px solid rgba(255,255,255,.06);
+  padding:24px 20px; display:flex; flex-direction:column; gap:18px; overflow-y:auto;
+}
+.pres-label { font-size:.6rem; font-weight:700; text-transform:uppercase; letter-spacing:.1em; color:rgba(255,255,255,.3); margin-bottom:6px }
+.pres-title { font-family:'Space Grotesk',sans-serif; font-size:1.5rem; font-weight:700; line-height:1.2 }
+.pres-desc { font-size:.82rem; color:rgba(255,255,255,.5); line-height:1.75; margin-top:8px }
+.pres-steps { display:flex; flex-direction:column; gap:10px }
+.pstep { display:flex; gap:12px; align-items:flex-start }
+.pstep-num {
+  min-width:24px; height:24px; border-radius:50%; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  font-size:.68rem; font-weight:700; color:var(--ink); background:var(--teal);
+}
+.pstep-text { font-size:.8rem; color:rgba(255,255,255,.6); line-height:1.55; padding-top:3px }
+
+/* ══════════════════════════════════════
+   TOAST
+══════════════════════════════════════ */
+.toast {
+  position:fixed; bottom:72px; left:50%; transform:translateX(-50%) translateY(60px);
+  background:var(--ink3); border:1px solid var(--line2); border-radius:var(--r2);
+  padding:9px 18px; font-size:.8rem; font-weight:500; z-index:9999;
+  transition:transform .3s cubic-bezier(.34,1.56,.64,1);
+  white-space:nowrap; max-width:90vw; overflow:hidden; text-overflow:ellipsis;
+  box-shadow:0 8px 32px rgba(0,0,0,.5);
+}
+@media(min-width:769px) { .toast { bottom:20px } }
+.toast.show { transform:translateX(-50%) translateY(0) }
+.toast.ok   { border-color:rgba(0,212,180,.4); color:var(--teal) }
+.toast.err  { border-color:rgba(224,85,85,.4); color:var(--red) }
+.toast.info { border-color:rgba(232,188,78,.4); color:var(--gold) }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="logo">
+      <div class="logo-badge">🦷</div>
+      Odonto<em>Scan</em> 3D
+    </div>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('scan',this)">📷 Escanear</div>
+      <div class="tab" onclick="switchTab('odonto',this)">🦷 Odontograma</div>
+      <div class="tab" onclick="switchTab('historico',this)">📁 Histórico</div>
+    </div>
+    <div class="patient-pill" onclick="editPatient()">
+      <div class="p-av" id="pAv">JD</div>
+      <span class="p-name" id="pName">João da Silva</span>
+    </div>
+  </div>
+
+  <!-- BODY -->
+  <div class="body">
+
+    <!-- PAINEL ESQUERDO -->
+    <div class="panel left" id="panelLeft">
+
+      <div class="psec">
+        <div class="psec-title">Câmera</div>
+        <div class="cam-wrap" id="camWrap">
+          <video id="camVideo" autoplay muted playsinline></video>
+          <div class="cam-hud">
+            <div class="cam-corner tl"></div><div class="cam-corner tr"></div>
+            <div class="cam-corner bl"></div><div class="cam-corner br"></div>
+            <div class="cam-cross"></div>
+            <div class="cam-rec" id="camRec"></div>
+            <div class="cam-fps" id="camFps">0 frames</div>
+            <div class="cam-counter" id="camCounter"></div>
+          </div>
+        </div>
+        <div class="qual-row">Qualidade <strong id="qualVal">—</strong></div>
+        <div class="qual-bar"><div class="qual-fill" id="qualFill"></div></div>
+      </div>
+
+      <div class="psec">
+        <div class="psec-title">Controles</div>
+        <div class="btns">
+          <button class="btn btn-teal" id="btnCam" onclick="initCamera()">📷 Ativar Câmera</button>
+          <button class="btn btn-red" id="btnStopCam" onclick="stopCamera()" style="display:none">🔴 Desligar Câmera</button>
+          <button class="btn btn-teal" id="btnCapture" onclick="startCapture()" disabled>⏺ Iniciar Captura</button>
+          <button class="btn btn-red" id="btnStop" onclick="stopCapture()" disabled style="display:none">⏹ Parar Captura</button>
+          <button class="btn btn-gold" id="btnProcess" onclick="processFrames()" disabled>⚙️ Gerar Modelo 3D</button>
+          <div class="prog" id="prog">
+            <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
+            <div class="prog-msg" id="progMsg">Aguardando...</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="psec guide">
+        <div class="guide">
+          <div class="guide-title">💡 Como escanear bem</div>
+          <ol>
+            <li><div class="guide-num">1</div>Superfície clara, iluminação difusa uniforme</li>
+            <li><div class="guide-num">2</div>Gire o modelo 360° lentamente</li>
+            <li><div class="guide-num">3</div>30–50 frames, câmera a 20–30cm</li>
+            <li><div class="guide-num">4</div>Inclua ângulos superiores e laterais</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="psec">
+        <div class="psec-title">Scans Recentes</div>
+        <div id="scanList">
+          <div style="font-size:.73rem;color:var(--muted);text-align:center;padding:16px 0">Nenhum scan ainda.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- CENTER -->
+    <div class="center" id="centerView">
+      <canvas id="c3d"></canvas>
+
+      <div class="ph" id="ph">
+        <div class="ph-icon">🦷</div>
+        <div class="ph-text">O modelo 3D aparecerá aqui.<br>Ative a câmera e capture os frames.</div>
+      </div>
+
+      <div class="vinfo" id="vinfo">
+        <div class="vinfo-title" id="vinfoTitle">—</div>
+        <div class="vinfo-sub" id="vinfoSub">—</div>
+      </div>
+
+      <div class="vactions">
+        <div class="vact" id="vaPresent" onclick="enterPres()">👁 Apresentar</div>
+        <div class="vact gold" id="vaStl" onclick="downloadSTL()">⬇ STL</div>
+        <div class="vact" id="vaNew" onclick="resetScan()">＋ Novo</div>
+      </div>
+
+      <div class="vhint">Arraste para girar · Scroll para zoom</div>
+
+      <div class="vzoom">
+        <div class="vz" onclick="zoom3d(1.2)">＋</div>
+        <div class="vz" onclick="zoom3d(.8)">－</div>
+        <div class="vz" onclick="reset3dCam()">⟳</div>
+      </div>
+
+      <!-- ODONTOGRAMA -->
+      <div class="odo-overlay" id="odoOverlay">
+        <div class="odo-header">
+          <div class="odo-title">Odontograma Interativo</div>
+          <div class="odo-legend">
+            <div class="leg"><div class="leg-dot" style="background:#e8f4ff"></div>Saudável</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--red)"></div>Cárie</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--gold)"></div>Coroa</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--blue)"></div>Implante</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--purple)"></div>Canal</div>
+            <div class="leg"><div class="leg-dot" style="background:#555"></div>Extraído</div>
+          </div>
+        </div>
+        <canvas id="odoCanvas"></canvas>
+        <div class="odo-tip">Toque num dente para selecionar · Escolha o tratamento no painel</div>
+      </div>
+    </div>
+
+    <!-- PAINEL DIREITO -->
+    <div class="panel right" id="panelRight">
+
+      <div class="psec">
+        <div class="psec-title">Paciente</div>
+        <div class="pinfo">
+          <div class="pinfo-name" id="rpName">João da Silva</div>
+          <div class="pinfo-sub">Retorno</div>
+          <span class="pinfo-edit" onclick="editPatient()">✏️ Alterar</span>
+        </div>
+      </div>
+
+      <div class="psec">
+        <div class="psec-title">Tratamento</div>
+        <div class="treat-grid">
+          <div class="tc carie"   onclick="selTreat('carie',this)"><div class="tc-icon">🦠</div><div class="tc-name">Cárie</div><div class="tc-desc">Região afetada</div></div>
+          <div class="tc coroa"   onclick="selTreat('coroa',this)"><div class="tc-icon">👑</div><div class="tc-name">Coroa</div><div class="tc-desc">Proteção total</div></div>
+          <div class="tc implante" onclick="selTreat('implante',this)"><div class="tc-icon">🔩</div><div class="tc-name">Implante</div><div class="tc-desc">Substituição</div></div>
+          <div class="tc canal"   onclick="selTreat('canal',this)"><div class="tc-icon">🔬</div><div class="tc-name">Canal</div><div class="tc-desc">Endodôntico</div></div>
+          <div class="tc resina"  onclick="selTreat('resina',this)"><div class="tc-icon">✨</div><div class="tc-name">Resina</div><div class="tc-desc">Restauração</div></div>
+          <div class="tc limpeza" onclick="selTreat('limpeza',this)"><div class="tc-icon">🪥</div><div class="tc-name">Limpeza</div><div class="tc-desc">Profilaxia</div></div>
+        </div>
+      </div>
+
+      <div class="psec">
+        <div class="psec-title">Dente Selecionado</div>
+        <div class="tooth-card">
+          <div class="tc-header">
+            <div>
+              <div class="tc-num" id="tcNum">—</div>
+              <div class="tc-name-label" id="tcName">Clique num dente</div>
+            </div>
+            <div class="tc-status ok" id="tcStatus">OK</div>
+          </div>
+          <div class="faces-label">Faces Afetadas</div>
+          <div class="faces">
+            <div class="face" data-face="V" onclick="toggleFace(this)">Vest.</div>
+            <div class="face" data-face="L" onclick="toggleFace(this)">Ling.</div>
+            <div class="face" data-face="M" onclick="toggleFace(this)">Mes.</div>
+            <div class="face" data-face="D" onclick="toggleFace(this)">Dist.</div>
+            <div class="face" data-face="O" onclick="toggleFace(this)">Ocl.</div>
+          </div>
+        </div>
+        <textarea class="notes" id="toothNotes" placeholder="Anotações clínicas..."></textarea>
+      </div>
+
+      <div class="psec">
+        <div class="psec-title">Ações</div>
+        <div class="btns">
+          <button class="btn btn-teal" onclick="enterPres()">👁 Apresentar ao Paciente</button>
+          <button class="btn btn-ghost" onclick="toast('PDF em breve!','info')">📄 Relatório PDF</button>
+          <button class="btn btn-ghost" onclick="downloadSTL()">📤 Exportar STL</button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- MOBILE NAV -->
+    <div class="mobile-nav">
+      <button class="mnav active" id="mnav-cam" onclick="mobileNav('cam')">
+        <div class="mnav-icon">📷</div><div class="mnav-label">Câmera</div>
+      </button>
+      <button class="mnav" id="mnav-odo" onclick="mobileNav('odo')">
+        <div class="mnav-icon">🦷</div><div class="mnav-label">Odonto</div>
+      </button>
+      <button class="mnav" id="mnav-treat" onclick="mobileNav('treat')">
+        <div class="mnav-icon">⚕️</div><div class="mnav-label">Trat.</div>
+      </button>
+      <button class="mnav" id="mnav-pres" onclick="enterPres()">
+        <div class="mnav-icon">👁</div><div class="mnav-label">Mostrar</div>
+      </button>
+    </div>
+
+  </div><!-- .body -->
+</div><!-- .app -->
+
+<!-- PRESENTATION MODE -->
+<div class="pres" id="presMode">
+  <div class="pres-top">
+    <div class="pres-logo">🦷 OdontoScan 3D</div>
+    <div class="pres-patient" id="presPatient">—</div>
+    <button class="pres-close" onclick="exitPres()">✕ Fechar</button>
+  </div>
+  <div class="pres-body">
+    <div class="pres-viewer"><canvas id="presCanvas"></canvas></div>
+    <div class="pres-panel">
+      <div>
+        <div class="pres-label">Diagnóstico</div>
+        <div class="pres-title" id="presTitle">Selecione um tratamento</div>
+        <div class="pres-desc" id="presDesc">Escolha o tipo de tratamento para visualizar as informações ao paciente.</div>
+      </div>
+      <div class="pres-steps" id="presSteps"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- LIBS -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<script src="/static/js/odontograma.js"></script>
+
+<script>
+// ════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════
+const API = window.location.origin + '/api';
+const S = {
+  stream:null, capturing:false, captureIv:null,
+  frameCount:0, frames:[], sessionId:null, scans:[],
+  treat:null, tooth:null, toothData:{}, tab:'scan'
+};
+
+const TOOTH_NAMES = {
+  11:'IC Sup Dir',12:'IL Sup Dir',13:'Can Sup Dir',14:'PM1 Sup Dir',15:'PM2 Sup Dir',16:'M1 Sup Dir',17:'M2 Sup Dir',18:'Siso Sup Dir',
+  21:'IC Sup Esq',22:'IL Sup Esq',23:'Can Sup Esq',24:'PM1 Sup Esq',25:'PM2 Sup Esq',26:'M1 Sup Esq',27:'M2 Sup Esq',28:'Siso Sup Esq',
+  31:'IC Inf Esq',32:'IL Inf Esq',33:'Can Inf Esq',34:'PM1 Inf Esq',35:'PM2 Inf Esq',36:'M1 Inf Esq',37:'M2 Inf Esq',38:'Siso Inf Esq',
+  41:'IC Inf Dir',42:'IL Inf Dir',43:'Can Inf Dir',44:'PM1 Inf Dir',45:'PM2 Inf Dir',46:'M1 Inf Dir',47:'M2 Inf Dir',48:'Siso Inf Dir'
+};
+
+const TREAT_INFO = {
+  carie:   {title:'Cárie Dentária',   color:'#e05555', desc:'Lesão bacteriana que destrói o esmalte e dentina. Necessita remoção e restauração.', steps:['Anestesia local','Remoção do tecido cariado','Condicionamento da cavidade','Aplicação de resina','Ajuste e polimento']},
+  coroa:   {title:'Coroa Dentária',   color:'#e8bc4e', desc:'Indicada quando o dente está muito destruído. Restaura forma, função e estética completa.', steps:['Preparo do dente','Moldagem digital','Envio ao laboratório','Coroa provisória','Cimentação definitiva']},
+  implante:{title:'Implante Dentário',color:'#4a8fff', desc:'Substitui o dente perdido com titânio osseointegrado. Resultado idêntico ao dente natural.', steps:['Avaliação tomográfica','Instalação cirúrgica','Osseointegração (3–6 meses)','Instalação do pilar','Coroa sobre implante']},
+  canal:   {title:'Tratamento de Canal',color:'#a855f7',desc:'Remove polpa infectada, limpa e sela os canais radiculares preservando o dente.', steps:['Anestesia e isolamento','Abertura coronária','Instrumentação dos canais','Obturação','Restauração coronal']},
+  resina:  {title:'Restauração com Resina',color:'#00d4b4',desc:'Restauração estética direta para cavidades pequenas a médias, aplicada em camadas.', steps:['Anestesia (se necessário)','Remoção do tecido','Condicionamento ácido','Resina em camadas','Fotopolimerização e polimento']},
+  limpeza: {title:'Profilaxia e Limpeza',color:'#f0c040',desc:'Remoção de placa, tártaro e manchas. Essencial para saúde periodontal.', steps:['Avaliação periodontal','Ultrassom','Curetagem subgengival','Polimento','Orientação de higiene']}
+};
+
+// ════════════════════════════════════════
+// THREE.JS
+// ════════════════════════════════════════
+let scene, cam3d, rend3d, cloudObj;
+let cDist=3, cTheta=.3, cPhi=1.1;
+let drag=false, pm={x:0,y:0}, prevT=null;
+
+function initThree(){
+  const canvas = document.getElementById('c3d');
+  const cont   = document.getElementById('centerView');
+  scene = new THREE.Scene();
+  const W=cont.clientWidth, H=cont.clientHeight;
+  cam3d = new THREE.PerspectiveCamera(45, W/H, .01, 200);
+  updateCam3d();
+  rend3d = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+  rend3d.setSize(W,H);
+  rend3d.setPixelRatio(Math.min(devicePixelRatio,2));
+  scene.add(new THREE.AmbientLight(0xffffff,.7));
+  const d=new THREE.DirectionalLight(0xffffff,.6); d.position.set(3,4,3); scene.add(d);
+  const grid=new THREE.GridHelper(6,30,0x1a2035,0x1a2035); grid.position.y=-1.3; scene.add(grid);
+
+  // Events
+  canvas.addEventListener('mousedown', e=>{drag=true;pm={x:e.clientX,y:e.clientY}});
+  window.addEventListener('mouseup', ()=>drag=false);
+  window.addEventListener('mousemove', e=>{
+    if(!drag)return;
+    cTheta -= (e.clientX-pm.x)*.008;
+    cPhi = Math.max(.15,Math.min(Math.PI-.15,cPhi+(e.clientY-pm.y)*.008));
+    pm={x:e.clientX,y:e.clientY}; updateCam3d();
+  });
+  canvas.addEventListener('wheel', e=>{cDist=Math.max(.5,Math.min(12,cDist+e.deltaY*.005));updateCam3d()});
+  canvas.addEventListener('touchstart',e=>{prevT=e.touches[0];e.preventDefault()},{passive:false});
+  canvas.addEventListener('touchmove',e=>{
+    if(!prevT||e.touches.length!==1)return;
+    const t=e.touches[0];
+    cTheta-=(t.clientX-prevT.clientX)*.01;
+    cPhi=Math.max(.15,Math.min(Math.PI-.15,cPhi+(t.clientY-prevT.clientY)*.01));
+    prevT=t; updateCam3d(); e.preventDefault();
+  },{passive:false});
+  canvas.addEventListener('touchend',()=>prevT=null);
+  window.addEventListener('resize',()=>{
+    const W=cont.clientWidth,H=cont.clientHeight;
+    cam3d.aspect=W/H; cam3d.updateProjectionMatrix(); rend3d.setSize(W,H);
+  });
+  (function loop(){requestAnimationFrame(loop); if(cloudObj&&cloudObj._spin)cloudObj.rotation.y+=.003; rend3d.render(scene,cam3d)})();
+}
+
+function updateCam3d(){
+  cam3d.position.set(
+    cDist*Math.sin(cPhi)*Math.sin(cTheta),
+    cDist*Math.cos(cPhi),
+    cDist*Math.sin(cPhi)*Math.cos(cTheta)
+  );
+  cam3d.lookAt(0,0,0);
+}
+function zoom3d(f){cDist=Math.max(.5,Math.min(12,cDist*f));updateCam3d()}
+function reset3dCam(){cDist=3;cTheta=.3;cPhi=1.1;updateCam3d()}
+
+function loadCloud(pts, colors, name, meta){
+  if(cloudObj){scene.remove(cloudObj);cloudObj.geometry.dispose();}
+  document.getElementById('ph').style.display='none';
+  const g=new THREE.BufferGeometry();
+  const pos=new Float32Array(pts.length*3), col=new Float32Array(pts.length*3);
+  pts.forEach((p,i)=>{
+    pos[i*3]=p[0];pos[i*3+1]=p[1];pos[i*3+2]=p[2];
+    const c=colors[i]||[.85,.85,.85];
+    col[i*3]=c[0];col[i*3+1]=c[1];col[i*3+2]=c[2];
+  });
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  cloudObj=new THREE.Points(g,new THREE.PointsMaterial({size:.018,vertexColors:true,sizeAttenuation:true}));
+  cloudObj._spin=true;
+  scene.add(cloudObj);
+  document.getElementById('vinfo').classList.add('show');
+  document.getElementById('vinfoTitle').textContent=name;
+  document.getElementById('vinfoSub').textContent=meta;
+  document.getElementById('vaPresent').classList.add('show');
+  document.getElementById('vaStl').classList.add('show');
+  document.getElementById('vaNew').classList.add('show');
+  reset3dCam();
+}
+
+function loadDemo(){
+  const pts=[],cols=[];
+  for(let t=0;t<Math.PI;t+=.06){
+    const r=1.1+Math.random()*.08;
+    const x=r*Math.cos(t), z=r*Math.sin(t)*.65;
+    for(let y=-.28;y<.38;y+=.045){
+      pts.push([x+(Math.random()-.5)*.04,y+(Math.random()-.5)*.02,z+(Math.random()-.5)*.04]);
+      const c=.72+Math.random()*.22; cols.push([c,c*.94,c*.87]);
+    }
+  }
+  loadCloud(pts,cols,'Arcada Demo','Demo · '+pts.length+' pontos');
+}
+
+// ════════════════════════════════════════
+// SOCKET.IO
+// ════════════════════════════════════════
+let socket=null;
+function initSocket(){
+  try{
+    socket=io(window.location.origin);
+    socket.on('progress',d=>{
+      if(d.session_id!==S.sessionId)return;
+      document.getElementById('progFill').style.width=d.progress+'%';
+      document.getElementById('progMsg').textContent=d.msg;
+    });
+    socket.on('scan_done',d=>{
+      if(d.session_id!==S.sessionId)return;
+      fetchResult(d.session_id);
+    });
+    socket.on('scan_error',d=>{
+      if(d.session_id!==S.sessionId)return;
+      toast('Erro: '+d.error,'err');
+      document.getElementById('btnProcess').disabled=false;
+    });
+  }catch(e){console.log('Socket.IO indisponível')}
+}
+
+// ════════════════════════════════════════
+// SOM & FEEDBACK
+// ════════════════════════════════════════
+let audioCtx=null;
+function playClick(){
+  try{
+    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.value=880;
+    g.gain.setValueAtTime(.12,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+.06);
+    o.start(); o.stop(audioCtx.currentTime+.06);
+  }catch(e){}
+}
+
+function flashFrame(){
+  const el=document.getElementById('camCounter');
+  el.textContent=S.frameCount;
+  el.classList.add('flash');
+  setTimeout(()=>el.classList.remove('flash'),80);
+}
+
+// ════════════════════════════════════════
+// CÂMERA
+// ════════════════════════════════════════
+async function initCamera(){
+  if(!navigator.mediaDevices?.getUserMedia){toast('Câmera não suportada','err');return}
+  try{ S.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false}) }
+  catch(e1){
+    try{ S.stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false}) }
+    catch(e2){ toast('Erro câmera: '+e2.message,'err'); return }
+  }
+  document.getElementById('camVideo').srcObject=S.stream;
+  document.getElementById('btnCam').style.display='none';
+  document.getElementById('btnStopCam').style.display='';
+  document.getElementById('btnCapture').disabled=false;
+  toast('Câmera ativada!','ok');
+}
+
+function stopCamera(){
+  S.stream?.getTracks().forEach(t=>t.stop()); S.stream=null;
+  if(S.capturing)stopCapture();
+  document.getElementById('camVideo').srcObject=null;
+  document.getElementById('btnStopCam').style.display='none';
+  document.getElementById('btnCam').style.display='';
+  document.getElementById('btnCapture').disabled=true;
+  toast('Câmera desligada','info');
+}
+
+// ════════════════════════════════════════
+// CAPTURA
+// ════════════════════════════════════════
+async function startCapture(){
+  const name=prompt('Nome do scan:','Scan_'+Date.now())||'Scan_'+Date.now();
+  // Cria sessão no backend
+  try{
+    const r=await fetch(API+'/session/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    if(!r.ok) throw new Error('Status '+r.status);
+    const d=await r.json();
+    S.sessionId=d.session_id;
+  }catch(e){toast('Erro ao conectar backend: '+e.message,'err');return}
+
+  S.frameCount=0; S.frames=[]; S._scanName=name; S.capturing=true;
+  document.getElementById('camRec').classList.add('on');
+  document.getElementById('btnCapture').style.display='none';
+  document.getElementById('btnStop').style.display=''; document.getElementById('btnStop').disabled=false;
+  document.getElementById('btnProcess').disabled=true;
+  S.captureIv=setInterval(captureFrame,350);
+  toast('Captura iniciada! Gire o modelo devagar.','ok');
+}
+
+function stopCapture(){
+  clearInterval(S.captureIv); S.capturing=false;
+  document.getElementById('camRec').classList.remove('on');
+  document.getElementById('btnStop').style.display='none';
+  document.getElementById('btnCapture').style.display=''; document.getElementById('btnCapture').disabled=true;
+  document.getElementById('btnProcess').disabled=S.frameCount<6;
+  toast(S.frameCount>=6?`✅ ${S.frameCount} frames capturados`:`Mínimo 6 frames (você tem ${S.frameCount})`,S.frameCount>=6?'ok':'err');
+}
+
+function captureFrame(){
+  const v=document.getElementById('camVideo');
+  if(!v.videoWidth)return;
+  const c=document.createElement('canvas');
+  c.width=v.videoWidth; c.height=v.videoHeight;
+  c.getContext('2d').drawImage(v,0,0);
+  S.frameCount++;
+  S.frames.push(c.toDataURL('image/jpeg',.88));
+  playClick(); flashFrame();
+  document.getElementById('camFps').textContent=S.frameCount+' frames';
+}
+
+// ════════════════════════════════════════
+// PROCESSAMENTO
+// ════════════════════════════════════════
+async function processFrames(){
+  if(!S.sessionId){toast('Inicie uma captura primeiro','err');return}
+  document.getElementById('btnProcess').disabled=true;
+  document.getElementById('prog').classList.add('show');
+  toast('Enviando frames para o servidor...','info');
+
+  // Envia frames
+  for(let i=0;i<S.frames.length;i++){
+    document.getElementById('progFill').style.width=(i/S.frames.length*40)+'%';
+    document.getElementById('progMsg').textContent=`Enviando frame ${i+1} de ${S.frames.length}...`;
+    try{
+      await fetch(API+'/frame/upload',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({session_id:S.sessionId,frame:S.frames[i]})
+      });
+    }catch(e){toast('Erro no envio: '+e.message,'err');return}
+  }
+
+  // Inicia processamento
+  document.getElementById('progFill').style.width='45%';
+  document.getElementById('progMsg').textContent='Iniciando COLMAP...';
+  try{
+    await fetch(API+'/scan/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:S.sessionId})});
+  }catch(e){toast('Erro: '+e.message,'err');return}
+
+  // Polling fallback se Socket.IO não disponível
+  if(!socket||!socket.connected) pollStatus(S.sessionId);
+}
+
+function pollStatus(sid){
+  const iv=setInterval(async()=>{
+    try{
+      const r=await fetch(API+'/scan/status/'+sid);
+      const d=await r.json();
+      document.getElementById('progFill').style.width=d.progress+'%';
+      document.getElementById('progMsg').textContent=d.msg;
+      if(d.status==='done'){clearInterval(iv);fetchResult(sid)}
+      else if(d.status==='error'){clearInterval(iv);toast('Erro: '+d.error,'err');document.getElementById('btnProcess').disabled=false}
+    }catch(e){clearInterval(iv);toast('Backend desconectado','err')}
+  },1000);
+}
+
+async function fetchResult(sid){
+  try{
+    const r=await fetch(API+'/scan/result/'+sid);
+    const d=await r.json();
+    loadCloud(d.points,d.colors,d.session_name,`${d.point_count.toLocaleString()} pontos · ${d.frame_count} frames · COLMAP`);
+    S.scans.unshift({id:sid,name:d.session_name,pts:d.point_count,date:new Date().toLocaleDateString('pt-BR')});
+    renderScanList();
+    S.frames=[]; S.frameCount=0;
+    toast(`✅ ${d.point_count.toLocaleString()} pontos 3D gerados!`,'ok');
+  }catch(e){toast('Erro ao carregar resultado','err')}
+}
+
+function renderScanList(){
+  const el=document.getElementById('scanList');
+  if(!S.scans.length){el.innerHTML='<div style="font-size:.73rem;color:var(--muted);text-align:center;padding:14px 0">Nenhum scan ainda.</div>';return}
+  el.innerHTML=S.scans.map(s=>`
+    <div class="scan-item ${s.id===S.sessionId?'active':''}">
+      <div class="si-name">${s.name}</div>
+      <div class="si-meta">${s.date}</div>
+      <div class="si-pts">${s.pts.toLocaleString()} pts</div>
+    </div>`).join('');
+}
+
+function resetScan(){
+  S.frameCount=0; S.frames=[];
+  document.getElementById('camFps').textContent='0 frames';
+  document.getElementById('qualFill').style.width='0';
+  document.getElementById('qualVal').textContent='—';
+  document.getElementById('btnCapture').disabled=!S.stream;
+  document.getElementById('btnProcess').disabled=true;
+  document.getElementById('prog').classList.remove('show');
+  toast('Pronto para novo scan','info');
+}
+
+function downloadSTL(){
+  if(!S.sessionId){toast('Nenhum scan selecionado','err');return}
+  window.location.href=API+'/scan/stl/'+S.sessionId;
+}
+
+// ════════════════════════════════════════
+// TRATAMENTO
+// ════════════════════════════════════════
+function selTreat(type,el){
+  S.treat=type;
+  document.querySelectorAll('.tc').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+  if(S.tooth){
+    if(!S.toothData[S.tooth])S.toothData[S.tooth]={treat:type,faces:[],notes:''};
+    S.toothData[S.tooth].treat=type;
+    ODO.setTreat(S.tooth,type); ODO.draw();
+  }
+  updatePresInfo();
+  toast(TREAT_INFO[type].title+' selecionado','info');
+}
+
+function toggleFace(btn){
+  if(!S.tooth){toast('Selecione um dente primeiro','err');return}
+  const face=btn.dataset.face;
+  if(!S.toothData[S.tooth])S.toothData[S.tooth]={treat:S.treat,faces:[],notes:''};
+  const data=S.toothData[S.tooth];
+  const idx=data.faces.indexOf(face);
+  if(idx>=0)data.faces.splice(idx,1); else data.faces.push(face);
+  data.treat=S.treat||data.treat;
+  btn.classList.toggle('active');
+  if(S.treat)btn.classList.toggle('affected',data.faces.includes(face));
+  ODO.setTreat(S.tooth,data.treat); ODO.draw();
+}
+
+function selectTooth(num){
+  S.tooth=num;
+  const data=S.toothData[num]||{treat:null,faces:[],notes:''};
+  document.getElementById('tcNum').textContent='Dente '+num;
+  document.getElementById('tcName').textContent=TOOTH_NAMES[num]||'Dente '+num;
+  document.getElementById('tcStatus').textContent=data.treat?'⚠️ Atenção':'OK';
+  document.getElementById('tcStatus').className='tc-status '+(data.treat?'warn':'ok');
+  document.querySelectorAll('.face').forEach(b=>{
+    b.classList.remove('active','affected');
+    if(data.faces?.includes(b.dataset.face))b.classList.add(data.treat?'affected':'active');
+  });
+  document.getElementById('toothNotes').value=data.notes||'';
+  if(window.innerWidth<=768)mobileNav('treat');
+  toast('Dente '+num+' — '+(TOOTH_NAMES[num]||num),'info');
+}
+
+// ════════════════════════════════════════
+// TABS & MOBILE NAV
+// ════════════════════════════════════════
+function switchTab(tab,el){
+  S.tab=tab;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  const odo=document.getElementById('odoOverlay');
+  odo.classList.toggle('show',tab==='odonto');
+  if(tab==='historico')toast('Histórico em breve!','info');
+  if(tab==='odonto')setTimeout(()=>{if(ODO?.canvas){ODO.resize();ODO.buildTeeth();ODO.draw()}},80);
+}
+
+function mobileNav(panel){
+  document.querySelectorAll('.mnav').forEach(b=>b.classList.remove('active'));
+  document.getElementById('mnav-'+panel)?.classList.add('active');
+  const right=document.getElementById('panelRight');
+  const odo=document.getElementById('odoOverlay');
+  right.classList.remove('open');
+  odo.classList.remove('show');
+  if(panel==='treat') right.classList.add('open');
+  else if(panel==='odo'){
+    odo.classList.add('show');
+    setTimeout(()=>{if(ODO?.canvas){ODO.resize();ODO.buildTeeth();ODO.draw()}},100);
+  }
+}
+
+// ════════════════════════════════════════
+// PRESENTATION
+// ════════════════════════════════════════
+let presR=null, presScene=null, presC=null, presObj=null;
+
+function enterPres(){
+  document.getElementById('presMode').classList.add('show');
+  document.getElementById('presPatient').textContent='Paciente: '+document.getElementById('pName').textContent;
+  updatePresInfo();
+  initPresThree();
+}
+function exitPres(){
+  document.getElementById('presMode').classList.remove('show');
+  presR?.dispose();
+}
+function updatePresInfo(){
+  const t=TREAT_INFO[S.treat];
+  if(!t)return;
+  const el=document.getElementById('presTitle');
+  el.textContent=t.title; el.style.color=t.color;
+  document.getElementById('presDesc').textContent=t.desc;
+  document.getElementById('presSteps').innerHTML=t.steps.map((s,i)=>`
+    <div class="pstep"><div class="pstep-num">${i+1}</div><div class="pstep-text">${s}</div></div>`).join('');
+}
+function initPresThree(){
+  const canvas=document.getElementById('presCanvas');
+  const cont=canvas.parentElement;
+  presScene=new THREE.Scene();
+  const W=cont.clientWidth,H=cont.clientHeight;
+  presC=new THREE.PerspectiveCamera(45,W/H,.01,200);
+  presC.position.set(0,0,3); presC.lookAt(0,0,0);
+  presR?.dispose();
+  presR=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+  presR.setSize(W,H);
+  presScene.add(new THREE.AmbientLight(0xffffff,.8));
+  const d=new THREE.DirectionalLight(0xffffff,.5); d.position.set(2,3,2); presScene.add(d);
+
+  if(cloudObj){ presObj=cloudObj.clone(); presScene.add(presObj); }
+  else loadDemoInPres();
+
+  let pd=false,pp={x:0,y:0},pDist=3,pTh=.3,pPh=1.1;
+  function pCam(){presC.position.set(pDist*Math.sin(pPh)*Math.sin(pTh),pDist*Math.cos(pPh),pDist*Math.sin(pPh)*Math.cos(pTh));presC.lookAt(0,0,0)}
+  canvas.addEventListener('mousedown',e=>{pd=true;pp={x:e.clientX,y:e.clientY}});
+  window.addEventListener('mouseup',()=>pd=false);
+  window.addEventListener('mousemove',e=>{if(!pd)return;pTh-=(e.clientX-pp.x)*.008;pPh=Math.max(.15,Math.min(Math.PI-.15,pPh+(e.clientY-pp.y)*.008));pp={x:e.clientX,y:e.clientY};pCam()});
+
+  let pt0=null;
+  canvas.addEventListener('touchstart',e=>{pt0=e.touches[0]},{passive:true});
+  canvas.addEventListener('touchmove',e=>{if(!pt0)return;const t=e.touches[0];pTh-=(t.clientX-pt0.clientX)*.012;pPh=Math.max(.15,Math.min(Math.PI-.15,pPh+(t.clientY-pt0.clientY)*.012));pt0=t;pCam()},{passive:true});
+
+  (function loop(){if(!document.getElementById('presMode').classList.contains('show'))return;requestAnimationFrame(loop);if(presObj)presObj.rotation.y+=.006;presR.render(presScene,presC)})();
+}
+
+function loadDemoInPres(){
+  const pts=[],cols=[];
+  for(let t=0;t<Math.PI;t+=.08){
+    const r=1.1,x=r*Math.cos(t),z=r*Math.sin(t)*.6;
+    for(let y=-.25;y<.35;y+=.05){
+      pts.push([x+(Math.random()-.5)*.04,y,z+(Math.random()-.5)*.04]);
+      const c=.75+Math.random()*.2; cols.push([c,c*.93,c*.85]);
+    }
+  }
+  const g=new THREE.BufferGeometry();
+  const pos=new Float32Array(pts.length*3),col=new Float32Array(pts.length*3);
+  pts.forEach((p,i)=>{pos[i*3]=p[0];pos[i*3+1]=p[1];pos[i*3+2]=p[2];col[i*3]=cols[i][0];col[i*3+1]=cols[i][1];col[i*3+2]=cols[i][2]});
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.BufferAttribute(col,3));
+  presObj=new THREE.Points(g,new THREE.PointsMaterial({size:.02,vertexColors:true}));
+  presScene.add(presObj);
+}
+
+// ════════════════════════════════════════
+// MISC
+// ════════════════════════════════════════
+function editPatient(){
+  const name=prompt('Nome do paciente:',document.getElementById('pName').textContent);
+  if(!name)return;
+  const ini=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+  document.getElementById('pName').textContent=name;
+  document.getElementById('rpName').textContent=name;
+  document.getElementById('pAv').textContent=ini;
+  toast('Paciente atualizado','ok');
+}
+
+let toastTm;
+function toast(msg,type='info'){
+  const el=document.getElementById('toast');
+  el.className='toast '+type; el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTm); toastTm=setTimeout(()=>el.classList.remove('show'),3200);
+}
+
+// ════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════
+window.addEventListener('load',()=>{
+  initThree();
+  ODO.init('odoCanvas');
+  ODO.onSelect=num=>selectTooth(num);
+  initSocket();
+  setTimeout(()=>{
+    loadDemo();
+    S.scans.unshift({id:'DEMO',name:'Demo — Arcada Completa',pts:1240,date:new Date().toLocaleDateString('pt-BR')});
+    renderScanList();
+  },1000);
+  // Mobile: abre câmera por padrão
+  if(window.innerWidth<=768){
+    document.getElementById('mnav-cam').classList.add('active');
+  }
+});
+window.addEventListener('resize',()=>{
+  const cont=document.getElementById('centerView');
+  const W=cont.clientWidth,H=cont.clientHeight;
+  if(!W||!H)return;
+  cam3d.aspect=W/H; cam3d.updateProjectionMatrix(); rend3d.setSize(W,H);
+});
+</script>
+</body>
+</html>

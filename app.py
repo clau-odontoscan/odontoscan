@@ -442,7 +442,7 @@ def _run_reconstruction(sid):
         cmd = (f'"{COLMAP}" feature_extractor --database_path "{db_path}" '
                f'--image_path "{img_dir}" --ImageReader.single_camera 1 '
                f'--SiftExtraction.use_gpu 0 --SiftExtraction.max_image_size 1280 '
-               f'--SiftExtraction.max_num_features 2048')
+               f'--SiftExtraction.max_num_features 2048 --SiftExtraction.num_threads 2')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
         _check_colmap_result(r, 'Feature extraction')
 
@@ -456,14 +456,15 @@ def _run_reconstruction(sid):
         # capturas com muitos frames (50-100+) em ambientes com recursos
         # limitados.
         cmd = (f'"{COLMAP}" sequential_matcher --database_path "{db_path}" '
-               f'--SiftMatching.use_gpu 0 --SequentialMatching.overlap 10 '
-               f'--SequentialMatching.quadratic_overlap 0')
+               f'--SiftMatching.use_gpu 0 --SiftMatching.num_threads 2 '
+               f'--SequentialMatching.overlap 10 --SequentialMatching.quadratic_overlap 0')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
         _check_colmap_result(r, 'Matching')
 
         # ── PASSO 3: Reconstrução sparse ──
         _update(sid, 50, 'Reconstruindo geometria 3D...')
-        cmd = f'"{COLMAP}" mapper --database_path "{db_path}" --image_path "{img_dir}" --output_path "{sparse_dir}"'
+        cmd = (f'"{COLMAP}" mapper --database_path "{db_path}" --image_path "{img_dir}" '
+               f'--output_path "{sparse_dir}" --Mapper.num_threads 2')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
         _check_colmap_result(r, 'Mapper')
 

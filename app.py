@@ -14,6 +14,16 @@ import trimesh
 from scipy.spatial import ConvexHull
 from sklearn.neighbors import NearestNeighbors
 
+# Open3D é usado para reconstrução de superfície de alta qualidade
+# (Poisson) e limpeza estatística de outliers. Import defensivo: se por
+# algum motivo não estiver disponível no ambiente, o sistema cai
+# automaticamente no método antigo (Convex Hull) sem quebrar.
+try:
+    import open3d as o3d
+    HAS_OPEN3D = True
+except Exception:
+    HAS_OPEN3D = False
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'odontoscan2024')
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
@@ -290,14 +300,10 @@ def _run_reconstruction(sid):
         cols = np.array(colors)
 
         # ── PASSO 6: Remove outliers ──
-        _update(sid, 80, 'Removendo outliers...')
-        center = pts.mean(axis=0)
-        dists  = np.linalg.norm(pts - center, axis=1)
-        mask   = dists < (dists.mean() + 2.5 * dists.std())
-        pts    = pts[mask]
-        cols   = cols[mask]
+        _update(sid, 80, 'Removendo outliers estatisticamente...')
+        pts, cols = _remove_outliers(pts, cols)
 
-        # ── PASSO 7: Densifica nuvem ──
+        # ── PASSO 7: Densifica nuvem (método simples, sempre roda) ──
         _update(sid, 85, 'Densificando nuvem de pontos...')
         pts, cols = _densify(pts, cols)
 
@@ -308,12 +314,22 @@ def _run_reconstruction(sid):
         if scale > 0:
             pts /= scale
 
-        # ── PASSO 9: Gera STL ──
-        _update(sid, 92, 'Gerando malha 3D...')
+        # ── PASSO 9: Gera malha 3D (Poisson via Open3D, com fallback) ──
+        _update(sid, 92, 'Reconstruindo superfície com Poisson...')
         stl_path = None
-        try:
-            stl_path = _make_mesh(pts, cols, base)
-        except: pass
+        method_used = 'Convex Hull (fallback)'
+        if HAS_OPEN3D:
+            try:
+                stl_path = _make_mesh_poisson(pts, cols, base)
+                method_used = 'COLMAP SfM + Open3D Poisson'
+            except Exception:
+                stl_path = None
+        if stl_path is None:
+            try:
+                stl_path = _make_mesh(pts, cols, base)
+                method_used = 'COLMAP SfM + Convex Hull (fallback)'
+            except Exception:
+                stl_path = None
 
         # ── PASSO 10: Salva resultado ──
         _update(sid, 97, 'Salvando resultado...')
@@ -324,7 +340,7 @@ def _run_reconstruction(sid):
             'colors':       cols.tolist(),
             'point_count':  len(pts),
             'frame_count':  frame_count,
-            'method':       'COLMAP SfM + Dense',
+            'method':       method_used,
             'has_stl':      stl_path is not None
         }
         with open(os.path.join(base, 'result.json'), 'w') as f:
@@ -368,8 +384,80 @@ def _densify(pts, cols, factor=3):
     except:
         return pts, cols
 
+def _remove_outliers(pts, cols):
+    """
+    Remove outliers da nuvem de pontos.
+    Usa remoção estatística do Open3D quando disponível (muito mais precisa,
+    pois olha a densidade local de vizinhos em vez de só a distância ao
+    centro), com fallback pro método antigo por desvio-padrão.
+    """
+    if HAS_OPEN3D and len(pts) >= 20:
+        try:
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(pts)
+            pcd.colors = o3d.utility.Vector3dVector(np.clip(cols, 0, 1))
+            pcd_clean, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+            clean_pts = np.asarray(pcd_clean.points)
+            clean_cols = np.asarray(pcd_clean.colors)
+            if len(clean_pts) >= 6:
+                return clean_pts, clean_cols
+        except Exception:
+            pass
+
+    # Fallback: filtro simples por distância ao centro
+    center = pts.mean(axis=0)
+    dists  = np.linalg.norm(pts - center, axis=1)
+    mask   = dists < (dists.mean() + 2.5 * dists.std())
+    return pts[mask], cols[mask]
+
+
+def _make_mesh_poisson(pts, cols, base_dir, depth=9):
+    """
+    Reconstrói a superfície 3D com Poisson Surface Reconstruction (Open3D).
+    Diferente do Convex Hull, respeita reentrâncias e cavidades reais
+    (espaço entre dentes, sulcos), gerando um modelo muito mais fiel.
+    """
+    if len(pts) < 20:
+        return None
+
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(pts)
+    pcd.colors = o3d.utility.Vector3dVector(np.clip(cols, 0, 1))
+
+    # Estima normais (obrigatório para o Poisson funcionar bem)
+    pcd.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.15, max_nn=30)
+    )
+    pcd.orient_normals_consistent_tangent_plane(k=30)
+
+    # Reconstrução Poisson
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pcd, depth=depth
+    )
+
+    # Remove os "balões" de baixa densidade que o Poisson costuma criar
+    # nas bordas onde há poucos dados de suporte
+    densities = np.asarray(densities)
+    threshold = np.quantile(densities, 0.02)
+    verts_to_remove = densities < threshold
+    mesh.remove_vertices_by_mask(verts_to_remove)
+
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    mesh.remove_non_manifold_edges()
+    mesh.compute_vertex_normals()
+
+    if len(mesh.vertices) < 4:
+        return None
+
+    path = os.path.join(base_dir, 'model.stl')
+    o3d.io.write_triangle_mesh(path, mesh)
+    return path
+
+
 def _make_mesh(pts, cols, base_dir):
-    """Gera malha STL via Convex Hull + suavização"""
+    """Gera malha STL via Convex Hull + suavização (fallback do Poisson)"""
     if len(pts) < 4:
         return None
     hull = ConvexHull(pts)

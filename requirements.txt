@@ -9,3 +9,4 @@ trimesh>=4.0
 Pillow>=10.0
 eventlet
 gunicorn
+open3d>=0.18.0

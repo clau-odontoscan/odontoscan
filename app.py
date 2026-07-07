@@ -163,7 +163,12 @@ def _process_live_frame(sid, img):
         pts1_in = pts1[mask_pose]
         pts2_in = pts2[mask_pose]
 
-        if len(pts1_in) < 8:
+        # Se poucos matches confirmaram a pose (ex: superfície muito lisa/sem
+        # textura, como uma tampa de caneta, ou movimento brusco), a
+        # estimativa é pouco confiável — melhor não gerar pontos nesse frame
+        # do que gerar "pontos-fantasma" distantes (efeito cometa).
+        inlier_ratio = mask_pose.sum() / max(len(matches), 1)
+        if len(pts1_in) < 8 or inlier_ratio < 0.35:
             state.update({'prev_kp': kp, 'prev_des': des})
             return [], []
 
@@ -173,9 +178,34 @@ def _process_live_frame(sid, img):
         pts4d = cv2.triangulatePoints(P1, P2, pts1_in.T, pts2_in.T)
         pts3d = (pts4d[:3] / pts4d[3]).T
 
-        valid = np.isfinite(pts3d).all(axis=1) & (np.linalg.norm(pts3d, axis=1) < 30)
-        pts3d = pts3d[valid]
-        pts2_valid = pts2_in[valid]
+        finite = np.isfinite(pts3d).all(axis=1)
+        dist_ok = np.zeros(len(pts3d), dtype=bool)
+        dist_ok[finite] = np.linalg.norm(pts3d[finite], axis=1) < 30
+        pts3d = pts3d[dist_ok]
+        pts1_f = pts1_in[dist_ok]
+        pts2_f = pts2_in[dist_ok]
+
+        if len(pts3d) == 0:
+            state.update({'prev_kp': kp, 'prev_des': des})
+            return [], []
+
+        # Filtra por erro de reprojeção: descarta pontos que, ao serem
+        # projetados de volta nas duas câmeras, não batem com os pixels
+        # originais — são justamente os "pontos-fantasma" que geram o
+        # efeito de cauda/cometa esparso no preview.
+        pts3d_h = np.hstack([pts3d, np.ones((len(pts3d), 1))])
+
+        def _reproj_err(P, pts3d_hom, pts2d):
+            proj = P @ pts3d_hom.T
+            proj = (proj[:2] / proj[2]).T
+            return np.linalg.norm(proj - pts2d, axis=1)
+
+        err1 = _reproj_err(P1, pts3d_h, pts1_f)
+        err2 = _reproj_err(P2, pts3d_h, pts2_f)
+        good = (err1 < 4.0) & (err2 < 4.0)
+
+        pts3d = pts3d[good]
+        pts2_valid = pts2_f[good]
 
         if len(pts3d) == 0:
             state.update({'prev_kp': kp, 'prev_des': des})
@@ -361,14 +391,14 @@ def _run_reconstruction(sid):
     try:
         # ── PASSO 1: Feature extraction ──
         _update(sid, 10, 'Extraindo pontos de interesse...')
-        cmd = f'"{COLMAP}" feature_extractor --database_path "{db_path}" --image_path "{img_dir}" --ImageReader.single_camera 1 --FeatureExtraction.use_gpu 0'
+        cmd = f'"{COLMAP}" feature_extractor --database_path "{db_path}" --image_path "{img_dir}" --ImageReader.single_camera 1 --SiftExtraction.use_gpu 0'
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
             raise Exception('Feature extraction falhou: ' + r.stderr[-400:])
 
         # ── PASSO 2: Matching ──
         _update(sid, 30, 'Calculando correspondências entre frames...')
-        cmd = f'"{COLMAP}" exhaustive_matcher --database_path "{db_path}" --FeatureMatching.use_gpu 0'
+        cmd = f'"{COLMAP}" exhaustive_matcher --database_path "{db_path}" --SiftMatching.use_gpu 0'
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
             raise Exception('Matching falhou: ' + r.stderr[-400:])

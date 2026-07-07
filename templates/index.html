@@ -685,7 +685,8 @@ const API = window.location.origin + '/api';
 const S = {
   stream:null, capturing:false, captureIv:null,
   frameCount:0, frames:[], sessionId:null, scans:[],
-  treat:null, tooth:null, toothData:{}, tab:'scan'
+  treat:null, tooth:null, toothData:{}, tab:'scan',
+  livePoints:[], liveColors:[]
 };
 
 const TOOTH_NAMES = {
@@ -707,7 +708,7 @@ const TREAT_INFO = {
 // ════════════════════════════════════════
 // THREE.JS
 // ════════════════════════════════════════
-let scene, cam3d, rend3d, cloudObj;
+let scene, cam3d, rend3d, cloudObj, liveCloudObj;
 let cDist=3, cTheta=.3, cPhi=1.1;
 let drag=false, pm={x:0,y:0}, prevT=null;
 
@@ -762,7 +763,54 @@ function updateCam3d(){
 function zoom3d(f){cDist=Math.max(.5,Math.min(12,cDist*f));updateCam3d()}
 function reset3dCam(){cDist=3;cTheta=.3;cPhi=1.1;updateCam3d()}
 
+function clearLiveCloud(){
+  if(liveCloudObj){
+    scene.remove(liveCloudObj);
+    liveCloudObj.geometry.dispose();
+    liveCloudObj.material.dispose();
+    liveCloudObj=null;
+  }
+  S.livePoints=[]; S.liveColors=[];
+}
+
+function appendLivePoints(newPoints, newColors){
+  if(!newPoints || !newPoints.length) return;
+  S.livePoints = S.livePoints.concat(newPoints);
+  S.liveColors = S.liveColors.concat(newColors);
+  renderLiveCloud();
+}
+
+function renderLiveCloud(){
+  if(!S.livePoints.length) return;
+  document.getElementById('ph').style.display='none';
+
+  if(liveCloudObj){
+    scene.remove(liveCloudObj);
+    liveCloudObj.geometry.dispose();
+    liveCloudObj.material.dispose();
+  }
+
+  const g=new THREE.BufferGeometry();
+  const pos=new Float32Array(S.livePoints.length*3);
+  const col=new Float32Array(S.livePoints.length*3);
+  S.livePoints.forEach((p,i)=>{
+    pos[i*3]=p[0]; pos[i*3+1]=p[1]; pos[i*3+2]=p[2];
+    const c=S.liveColors[i]||[.8,.8,.8];
+    col[i*3]=c[0]; col[i*3+1]=c[1]; col[i*3+2]=c[2];
+  });
+  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  g.setAttribute('color', new THREE.BufferAttribute(col,3));
+  liveCloudObj = new THREE.Points(g, new THREE.PointsMaterial({size:.014, vertexColors:true, sizeAttenuation:true, transparent:true, opacity:.85}));
+  liveCloudObj._spin=false;
+  scene.add(liveCloudObj);
+
+  document.getElementById('vinfo').classList.add('show');
+  document.getElementById('vinfoTitle').textContent='🔴 Capturando ao vivo...';
+  document.getElementById('vinfoSub').textContent=S.livePoints.length+' pontos (preview aproximado)';
+}
+
 function loadCloud(pts, colors, name, meta){
+  clearLiveCloud();
   if(cloudObj){scene.remove(cloudObj);cloudObj.geometry.dispose();}
   document.getElementById('ph').style.display='none';
   const g=new THREE.BufferGeometry();
@@ -819,6 +867,10 @@ function initSocket(){
       if(d.session_id!==S.sessionId)return;
       toast('Erro: '+d.error,'err');
       document.getElementById('btnProcess').disabled=false;
+    });
+    socket.on('live_points',d=>{
+      if(d.session_id!==S.sessionId)return;
+      appendLivePoints(d.new_points, d.new_colors);
     });
   }catch(e){console.log('Socket.IO indisponível')}
 }
@@ -887,12 +939,18 @@ async function startCapture(){
   }catch(e){toast('Erro ao conectar backend: '+e.message,'err');return}
 
   S.frameCount=0; S.frames=[]; S._scanName=name; S.capturing=true;
+  clearLiveCloud();
+  if(cloudObj){scene.remove(cloudObj);cloudObj.geometry.dispose();cloudObj=null;}
+  document.getElementById('ph').style.display='none';
+  document.getElementById('vaPresent').classList.remove('show');
+  document.getElementById('vaStl').classList.remove('show');
+  document.getElementById('vaNew').classList.remove('show');
   document.getElementById('camRec').classList.add('on');
   document.getElementById('btnCapture').style.display='none';
   document.getElementById('btnStop').style.display=''; document.getElementById('btnStop').disabled=false;
   document.getElementById('btnProcess').disabled=true;
   S.captureIv=setInterval(captureFrame,350);
-  toast('Captura iniciada! Gire o modelo devagar.','ok');
+  toast('Captura iniciada! Gire o modelo devagar — o preview vai se formando na tela.','ok');
 }
 
 function stopCapture(){
@@ -904,16 +962,28 @@ function stopCapture(){
   toast(S.frameCount>=6?`✅ ${S.frameCount} frames capturados`:`Mínimo 6 frames (você tem ${S.frameCount})`,S.frameCount>=6?'ok':'err');
 }
 
-function captureFrame(){
+async function captureFrame(){
   const v=document.getElementById('camVideo');
   if(!v.videoWidth)return;
   const c=document.createElement('canvas');
   c.width=v.videoWidth; c.height=v.videoHeight;
   c.getContext('2d').drawImage(v,0,0);
+  const dataUrl=c.toDataURL('image/jpeg',.88);
   S.frameCount++;
-  S.frames.push(c.toDataURL('image/jpeg',.88));
+  S.frames.push(dataUrl);
   playClick(); flashFrame();
   document.getElementById('camFps').textContent=S.frameCount+' frames';
+
+  // Envia imediatamente para o backend, que já responde com um preview
+  // 3D ao vivo (odometria visual aproximada) via WebSocket, enquanto a
+  // captura continua — é o que faz a nuvem "crescer" na tela em tempo real.
+  try{
+    await fetch(API+'/frame/upload',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:S.sessionId,frame:dataUrl})
+    });
+  }catch(e){ /* silencioso — o preview é só cosmético, não pode travar a captura */ }
 }
 
 // ════════════════════════════════════════
@@ -923,24 +993,12 @@ async function processFrames(){
   if(!S.sessionId){toast('Inicie uma captura primeiro','err');return}
   document.getElementById('btnProcess').disabled=true;
   document.getElementById('prog').classList.add('show');
-  toast('Enviando frames para o servidor...','info');
+  document.getElementById('progFill').style.width='5%';
+  document.getElementById('progMsg').textContent='Iniciando reconstrução final (COLMAP + Poisson)...';
+  toast('Gerando modelo final de alta qualidade...','info');
 
-  // Envia frames
-  for(let i=0;i<S.frames.length;i++){
-    document.getElementById('progFill').style.width=(i/S.frames.length*40)+'%';
-    document.getElementById('progMsg').textContent=`Enviando frame ${i+1} de ${S.frames.length}...`;
-    try{
-      await fetch(API+'/frame/upload',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({session_id:S.sessionId,frame:S.frames[i]})
-      });
-    }catch(e){toast('Erro no envio: '+e.message,'err');return}
-  }
-
-  // Inicia processamento
-  document.getElementById('progFill').style.width='45%';
-  document.getElementById('progMsg').textContent='Iniciando COLMAP...';
+  // Os frames já foram enviados durante a captura (preview ao vivo).
+  // Aqui só disparamos o processamento final de alta precisão.
   try{
     await fetch(API+'/scan/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:S.sessionId})});
   }catch(e){toast('Erro: '+e.message,'err');return}
@@ -966,7 +1024,7 @@ async function fetchResult(sid){
   try{
     const r=await fetch(API+'/scan/result/'+sid);
     const d=await r.json();
-    loadCloud(d.points,d.colors,d.session_name,`${d.point_count.toLocaleString()} pontos · ${d.frame_count} frames · COLMAP`);
+    loadCloud(d.points,d.colors,d.session_name,`${d.point_count.toLocaleString()} pontos · ${d.frame_count} frames · ${d.method||'COLMAP'}`);
     S.scans.unshift({id:sid,name:d.session_name,pts:d.point_count,date:new Date().toLocaleDateString('pt-BR')});
     renderScanList();
     S.frames=[]; S.frameCount=0;
@@ -987,6 +1045,7 @@ function renderScanList(){
 
 function resetScan(){
   S.frameCount=0; S.frames=[];
+  clearLiveCloud();
   document.getElementById('camFps').textContent='0 frames';
   document.getElementById('qualFill').style.width='0';
   document.getElementById('qualVal').textContent='—';

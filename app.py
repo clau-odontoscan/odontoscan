@@ -381,6 +381,25 @@ def _get_session_name(sid):
         row = db.execute('SELECT name FROM sessions WHERE sid=?', (sid,)).fetchone()
     return row['name'] if row else sid
 
+def _check_colmap_result(r, step_name):
+    """
+    Verifica o resultado de um comando COLMAP e lança uma exceção com
+    mensagem clara. Código de retorno negativo geralmente indica que o
+    processo foi encerrado por um sinal do sistema — o caso mais comum
+    é falta de memória (OOM killer), especialmente com muitos frames
+    em ambientes com RAM limitada.
+    """
+    if r.returncode == 0:
+        return
+    if r.returncode < 0:
+        raise Exception(
+            f'{step_name} foi interrompido abruptamente (código {r.returncode}). '
+            f'Provavelmente falta de memória — tente capturar menos frames '
+            f'(30-50 costuma ser suficiente). Log: ' + r.stderr[-300:]
+        )
+    raise Exception(f'{step_name} falhou: ' + r.stderr[-400:])
+
+
 def _run_reconstruction(sid):
     base   = os.path.join(DATA_DIR, sid)
     img_dir   = os.path.join(base, 'images')
@@ -391,24 +410,36 @@ def _run_reconstruction(sid):
     try:
         # ── PASSO 1: Feature extraction ──
         _update(sid, 10, 'Extraindo pontos de interesse...')
-        cmd = f'"{COLMAP}" feature_extractor --database_path "{db_path}" --image_path "{img_dir}" --ImageReader.single_camera 1 --SiftExtraction.use_gpu 0'
+        # Limitamos o tamanho máximo da imagem e o número de features por
+        # frame para reduzir o consumo de memória — importante em ambientes
+        # com RAM limitada (como o plano gratuito do Railway).
+        cmd = (f'"{COLMAP}" feature_extractor --database_path "{db_path}" '
+               f'--image_path "{img_dir}" --ImageReader.single_camera 1 '
+               f'--SiftExtraction.use_gpu 0 --SiftExtraction.max_image_size 1600 '
+               f'--SiftExtraction.max_num_features 4096')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
-        if r.returncode != 0:
-            raise Exception('Feature extraction falhou: ' + r.stderr[-400:])
+        _check_colmap_result(r, 'Feature extraction')
 
         # ── PASSO 2: Matching ──
         _update(sid, 30, 'Calculando correspondências entre frames...')
-        cmd = f'"{COLMAP}" exhaustive_matcher --database_path "{db_path}" --SiftMatching.use_gpu 0'
+        # Usamos sequential_matcher em vez de exhaustive_matcher: como os
+        # frames são capturados girando a câmera em torno do objeto (em
+        # sequência), só faz sentido comparar cada frame com seus vizinhos
+        # próximos, não com todos os outros. Isso reduz drasticamente o
+        # consumo de CPU/memória (de O(n²) para O(n)) — importante para
+        # capturas com muitos frames (50-100+) em ambientes com recursos
+        # limitados.
+        cmd = (f'"{COLMAP}" sequential_matcher --database_path "{db_path}" '
+               f'--SiftMatching.use_gpu 0 --SequentialMatching.overlap 10 '
+               f'--SequentialMatching.quadratic_overlap 0')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise Exception('Matching falhou: ' + r.stderr[-400:])
+        _check_colmap_result(r, 'Matching')
 
         # ── PASSO 3: Reconstrução sparse ──
         _update(sid, 50, 'Reconstruindo geometria 3D...')
         cmd = f'"{COLMAP}" mapper --database_path "{db_path}" --image_path "{img_dir}" --output_path "{sparse_dir}"'
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
-        if r.returncode != 0:
-            raise Exception('Mapper falhou: ' + r.stderr[-400:])
+        _check_colmap_result(r, 'Mapper')
 
         # Encontra modelo gerado
         model_dir = None

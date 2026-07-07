@@ -5,6 +5,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import os, uuid, json, base64, subprocess, shutil, threading, time
 import sqlite3
+import concurrent.futures
 from contextlib import contextmanager
 import numpy as np
 import cv2
@@ -426,6 +427,20 @@ def _check_colmap_result(r, step_name):
     raise Exception(f'{step_name} falhou: ' + r.stderr[-400:])
 
 
+def _run_with_timeout(fn, args=(), timeout=120):
+    """
+    Executa fn(*args) com um limite de tempo real (usando uma thread
+    separada). Se a função não terminar a tempo, levanta
+    concurrent.futures.TimeoutError. Isso garante que etapas de
+    pós-processamento em Python puro (densificação, geração de malha),
+    que não têm timeout nativo como os comandos do COLMAP, nunca fiquem
+    travadas indefinidamente.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(fn, *args)
+        return future.result(timeout=timeout)
+
+
 def _run_reconstruction(sid):
     base   = os.path.join(DATA_DIR, sid)
     img_dir   = os.path.join(base, 'images')
@@ -514,9 +529,18 @@ def _run_reconstruction(sid):
         _update(sid, 80, 'Removendo outliers estatisticamente...')
         pts, cols = _remove_outliers(pts, cols)
 
-        # ── PASSO 7: Densifica nuvem (método simples, sempre roda) ──
+        # ── PASSO 7: Densifica nuvem (com limite de tempo real) ──
         _update(sid, 85, 'Densificando nuvem de pontos...')
-        pts, cols = _densify(pts, cols)
+        # Se a nuvem já estiver muito grande, pular a densificação —
+        # ela multiplica os pontos por ~4x, o que ficaria desnecessariamente
+        # pesado (e mais lento) em nuvens já densas.
+        if len(pts) <= 4000:
+            try:
+                pts, cols = _run_with_timeout(_densify, (pts, cols), timeout=90)
+            except Exception:
+                # Timeout ou qualquer erro: segue com a nuvem sem densificar,
+                # em vez de travar o scan inteiro.
+                pass
 
         # ── PASSO 8: Normaliza ──
         center = pts.mean(axis=0)
@@ -525,19 +549,19 @@ def _run_reconstruction(sid):
         if scale > 0:
             pts /= scale
 
-        # ── PASSO 9: Gera malha 3D (Poisson via Open3D, com fallback) ──
+        # ── PASSO 9: Gera malha 3D (Poisson via Open3D, com fallback e timeout real) ──
         _update(sid, 92, 'Reconstruindo superfície com Poisson...')
         stl_path = None
         method_used = 'Convex Hull (fallback)'
         if HAS_OPEN3D:
             try:
-                stl_path = _make_mesh_poisson(pts, cols, base)
+                stl_path = _run_with_timeout(_make_mesh_poisson, (pts, cols, base), timeout=120)
                 method_used = 'COLMAP SfM + Open3D Poisson'
             except Exception:
                 stl_path = None
         if stl_path is None:
             try:
-                stl_path = _make_mesh(pts, cols, base)
+                stl_path = _run_with_timeout(_make_mesh, (pts, cols, base), timeout=60)
                 method_used = 'COLMAP SfM + Convex Hull (fallback)'
             except Exception:
                 stl_path = None

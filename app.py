@@ -4,6 +4,8 @@ from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import os, uuid, json, base64, subprocess, shutil, threading, time
+import sqlite3
+from contextlib import contextmanager
 import numpy as np
 import cv2
 from PIL import Image
@@ -29,7 +31,67 @@ if IS_RAILWAY:
 else:
     COLMAP = r'C:\Users\Gabriela\Desktop\bin\colmap.exe'
 
+# Timeout de segurança: se uma sessão ficar "processing" sem atualização
+# por mais que isso (em segundos), é marcada como erro automaticamente.
+PROCESSING_WATCHDOG_SECONDS = 20 * 60  # 20 minutos
+
+# ── SESSÕES PERSISTENTES (SQLite) ───────────────────────────────────────────────
+# Guardamos o estado das sessões em disco (no volume persistente do Railway)
+# para sobreviver a reinícios do container. Isso evita que o frontend fique
+# "preso" esperando um processo que já morreu.
+SESSIONS_DB = os.path.join(DATA_DIR, 'sessions.db')
+
+
+def init_sessions_db():
+    conn = sqlite3.connect(SESSIONS_DB)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS sessions (
+            sid TEXT PRIMARY KEY,
+            name TEXT,
+            frame_count INTEGER DEFAULT 0,
+            status TEXT,
+            progress INTEGER DEFAULT 0,
+            msg TEXT,
+            created REAL,
+            updated REAL,
+            points INTEGER DEFAULT 0,
+            error TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+@contextmanager
+def get_db():
+    conn = sqlite3.connect(SESSIONS_DB, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+init_sessions_db()
+
+# Cache leve em memória: sid -> lista de paths de frames.
+# Os arquivos de imagem já ficam salvos em disco, então isso é só um
+# atalho para contar frames rapidamente sem consultar o disco toda vez.
+# Se o container reiniciar no meio de uma captura, essa lista é reconstruída
+# a partir da pasta de imagens (veja _rebuild_frame_cache).
 sessions = {}
+
+
+def _rebuild_frame_cache(sid):
+    """Reconstrói o cache de frames de uma sessão a partir do disco."""
+    img_dir = os.path.join(DATA_DIR, sid, 'images')
+    if not os.path.isdir(img_dir):
+        sessions[sid] = []
+        return
+    files = sorted(f for f in os.listdir(img_dir) if f.lower().endswith('.jpg'))
+    sessions[sid] = [os.path.join(img_dir, f) for f in files]
+
 
 # ── FRONTEND ───────────────────────────────────────────────────────────────────
 @app.route('/')
@@ -50,15 +112,17 @@ def ping():
 def new_session():
     data = request.json or {}
     sid  = str(uuid.uuid4())[:8].upper()
-    sessions[sid] = {
-        'name':     data.get('name', f'Scan_{sid}'),
-        'frames':   [],
-        'status':   'capturing',
-        'progress': 0,
-        'msg':      'Aguardando frames...',
-        'created':  time.time(),
-        'points':   0
-    }
+    name = data.get('name', f'Scan_{sid}')
+    now  = time.time()
+
+    with get_db() as db:
+        db.execute(
+            'INSERT INTO sessions (sid, name, frame_count, status, progress, msg, created, updated, points) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            (sid, name, 0, 'capturing', 0, 'Aguardando frames...', now, now, 0)
+        )
+
+    sessions[sid] = []
     os.makedirs(os.path.join(DATA_DIR, sid, 'images'), exist_ok=True)
     return jsonify({'session_id': sid, 'status': 'ok'})
 
@@ -67,8 +131,16 @@ def new_session():
 def upload_frame():
     data = request.json
     sid  = data.get('session_id')
-    if not sid or sid not in sessions:
+    if not sid:
         return jsonify({'error': 'Sessão inválida'}), 400
+
+    if sid not in sessions:
+        # Container pode ter reiniciado; tenta recuperar do disco/DB
+        with get_db() as db:
+            row = db.execute('SELECT sid FROM sessions WHERE sid=?', (sid,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Sessão inválida'}), 400
+        _rebuild_frame_cache(sid)
 
     img_b64   = data['frame'].split(',')[1]
     img_bytes = base64.b64decode(img_b64)
@@ -78,15 +150,19 @@ def upload_frame():
     if img is None:
         return jsonify({'error': 'Frame inválido'}), 400
 
-    idx      = len(sessions[sid]['frames'])
+    idx      = len(sessions[sid])
     img_path = os.path.join(DATA_DIR, sid, 'images', f'{idx:04d}.jpg')
     cv2.imwrite(img_path, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
-    sessions[sid]['frames'].append(img_path)
+    sessions[sid].append(img_path)
 
     # Keypoints para feedback
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     orb  = cv2.ORB_create(500)
     kp, _ = orb.detectAndCompute(gray, None)
+
+    with get_db() as db:
+        db.execute('UPDATE sessions SET frame_count=?, updated=? WHERE sid=?',
+                   (idx + 1, time.time(), sid))
 
     # Notifica via WebSocket
     socketio.emit('frame_received', {
@@ -103,27 +179,46 @@ def upload_frame():
 def process_scan():
     data = request.json
     sid  = data.get('session_id')
-    if not sid or sid not in sessions:
+    if not sid:
         return jsonify({'error': 'Sessão inválida'}), 400
 
-    sess = sessions[sid]
-    if len(sess['frames']) < 6:
-        return jsonify({'error': f'Mínimo 6 frames. Você tem {len(sess["frames"])}.'}), 400
+    if sid not in sessions:
+        with get_db() as db:
+            row = db.execute('SELECT sid FROM sessions WHERE sid=?', (sid,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Sessão inválida'}), 400
+        _rebuild_frame_cache(sid)
 
-    sess['status'] = 'processing'
+    frame_count = len(sessions[sid])
+    if frame_count < 6:
+        return jsonify({'error': f'Mínimo 6 frames. Você tem {frame_count}.'}), 400
+
+    with get_db() as db:
+        db.execute('UPDATE sessions SET status=?, updated=? WHERE sid=?',
+                   ('processing', time.time(), sid))
+
     t = threading.Thread(target=_run_reconstruction, args=(sid,))
     t.daemon = True
     t.start()
     return jsonify({'status': 'processing'})
 
-def _update(sid, progress, msg):
-    """Atualiza progresso via WebSocket e sessão"""
-    sessions[sid]['progress'] = progress
-    sessions[sid]['msg']      = msg
+def _update(sid, progress, msg, status=None):
+    """Atualiza progresso no banco (persistente) e via WebSocket."""
+    with get_db() as db:
+        if status:
+            db.execute('UPDATE sessions SET progress=?, msg=?, status=?, updated=? WHERE sid=?',
+                       (progress, msg, status, time.time(), sid))
+        else:
+            db.execute('UPDATE sessions SET progress=?, msg=?, updated=? WHERE sid=?',
+                       (progress, msg, time.time(), sid))
     socketio.emit('progress', {'session_id': sid, 'progress': progress, 'msg': msg})
 
+def _get_session_name(sid):
+    with get_db() as db:
+        row = db.execute('SELECT name FROM sessions WHERE sid=?', (sid,)).fetchone()
+    return row['name'] if row else sid
+
 def _run_reconstruction(sid):
-    sess   = sessions[sid]
     base   = os.path.join(DATA_DIR, sid)
     img_dir   = os.path.join(base, 'images')
     db_path   = os.path.join(base, 'database.db')
@@ -222,27 +317,28 @@ def _run_reconstruction(sid):
 
         # ── PASSO 10: Salva resultado ──
         _update(sid, 97, 'Salvando resultado...')
+        frame_count = len(sessions.get(sid, []))
         result = {
-            'session_name': sess['name'],
+            'session_name': _get_session_name(sid),
             'points':       pts.tolist(),
             'colors':       cols.tolist(),
             'point_count':  len(pts),
-            'frame_count':  len(sess['frames']),
+            'frame_count':  frame_count,
             'method':       'COLMAP SfM + Dense',
             'has_stl':      stl_path is not None
         }
         with open(os.path.join(base, 'result.json'), 'w') as f:
             json.dump(result, f)
 
-        sess['status'] = 'done'
-        sess['points'] = len(pts)
-        _update(sid, 100, f'Concluído! {len(pts):,} pontos 3D gerados.')
+        with get_db() as db:
+            db.execute('UPDATE sessions SET points=? WHERE sid=?', (len(pts), sid))
+        _update(sid, 100, f'Concluído! {len(pts):,} pontos 3D gerados.', status='done')
         socketio.emit('scan_done', {'session_id': sid, 'point_count': len(pts)})
 
     except Exception as e:
-        sess['status'] = 'error'
-        sess['error']  = str(e)
-        _update(sid, 0, 'Erro: ' + str(e)[:100])
+        with get_db() as db:
+            db.execute('UPDATE sessions SET error=? WHERE sid=?', (str(e), sid))
+        _update(sid, 0, 'Erro: ' + str(e)[:100], status='error')
         socketio.emit('scan_error', {'session_id': sid, 'error': str(e)})
 
 def _densify(pts, cols, factor=3):
@@ -286,15 +382,31 @@ def _make_mesh(pts, cols, base_dir):
 # ── STATUS ─────────────────────────────────────────────────────────────────────
 @app.route('/api/scan/status/<sid>')
 def scan_status(sid):
-    if sid not in sessions:
+    with get_db() as db:
+        row = db.execute('SELECT * FROM sessions WHERE sid=?', (sid,)).fetchone()
+
+    if not row:
         return jsonify({'error': 'Não encontrado'}), 404
-    s = sessions[sid]
+
+    # Watchdog: se está "processing" há muito tempo sem nenhuma atualização,
+    # provavelmente o processo morreu (ex: restart do container) — marca erro
+    # em vez de deixar o frontend preso pra sempre.
+    if row['status'] == 'processing' and (time.time() - row['updated']) > PROCESSING_WATCHDOG_SECONDS:
+        with get_db() as db:
+            db.execute('UPDATE sessions SET status=?, error=?, updated=? WHERE sid=?',
+                       ('error', 'Timeout: processamento não respondeu a tempo. Tente novamente.',
+                        time.time(), sid))
+        return jsonify({
+            'status': 'error', 'progress': 0, 'msg': '',
+            'points': 0, 'error': 'Timeout: processamento travou'
+        })
+
     return jsonify({
-        'status':   s.get('status'),
-        'progress': s.get('progress', 0),
-        'msg':      s.get('msg', ''),
-        'points':   s.get('points', 0),
-        'error':    s.get('error')
+        'status':   row['status'],
+        'progress': row['progress'],
+        'msg':      row['msg'],
+        'points':   row['points'],
+        'error':    row['error']
     })
 
 # ── RESULTADO ──────────────────────────────────────────────────────────────────
@@ -317,17 +429,21 @@ def download_stl(sid):
 # ── LISTA ──────────────────────────────────────────────────────────────────────
 @app.route('/api/scans/list')
 def list_scans():
-    result = []
-    for sid, s in sessions.items():
-        if s.get('status') == 'done':
-            result.append({
-                'id':      sid,
-                'name':    s.get('name'),
-                'frames':  len(s.get('frames', [])),
-                'points':  s.get('points', 0),
-                'created': s.get('created')
-            })
-    return jsonify(sorted(result, key=lambda x: x['created'], reverse=True))
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT sid, name, frame_count, points, created FROM sessions "
+            "WHERE status='done' ORDER BY created DESC"
+        ).fetchall()
+
+    result = [{
+        'id':      row['sid'],
+        'name':    row['name'],
+        'frames':  row['frame_count'],
+        'points':  row['points'],
+        'created': row['created']
+    } for row in rows]
+
+    return jsonify(result)
 
 # ── WEBSOCKET ──────────────────────────────────────────────────────────────────
 @socketio.on('connect')

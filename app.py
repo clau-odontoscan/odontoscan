@@ -103,6 +103,114 @@ def _rebuild_frame_cache(sid):
     sessions[sid] = [os.path.join(img_dir, f) for f in files]
 
 
+# ── PREVIEW 3D AO VIVO (odometria visual leve) ──────────────────────────────
+# Enquanto o dentista captura os frames, fazemos uma estimativa RÁPIDA e
+# aproximada da posição 3D dos pontos usando odometria visual simples
+# (ORB + Matriz Essencial + triangulação). Isso é só para dar feedback
+# visual imediato — "colando" a imagem na tela conforme os frames chegam.
+# Não substitui a reconstrução completa via COLMAP + Poisson, que é muito
+# mais precisa e roda só quando o dentista clica em "Gerar Modelo 3D".
+live_odometry = {}
+
+
+def _process_live_frame(sid, img):
+    """
+    Recebe um frame e retorna (novos_pontos_3d, novas_cores) estimados por
+    odometria visual em relação ao frame anterior da mesma sessão.
+    Extremamente tolerante a falhas: qualquer problema retorna listas vazias
+    em vez de lançar exceção, para nunca travar o upload do frame.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    focal = float(w)
+    pp = (w / 2.0, h / 2.0)
+    K = np.array([[focal, 0, pp[0]], [0, focal, pp[1]], [0, 0, 1]])
+
+    orb = cv2.ORB_create(800)
+    kp, des = orb.detectAndCompute(gray, None)
+
+    state = live_odometry.get(sid)
+
+    if state is None or des is None or len(kp) < 8:
+        live_odometry[sid] = {'prev_kp': kp, 'prev_des': des, 'pose': np.eye(4)}
+        return [], []
+
+    prev_des = state.get('prev_des')
+    if prev_des is None:
+        state.update({'prev_kp': kp, 'prev_des': des})
+        return [], []
+
+    try:
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = bf.match(prev_des, des)
+        if len(matches) < 15:
+            state.update({'prev_kp': kp, 'prev_des': des})
+            return [], []
+
+        matches = sorted(matches, key=lambda m: m.distance)[:250]
+        prev_kp = state['prev_kp']
+        pts1 = np.float32([prev_kp[m.queryIdx].pt for m in matches])
+        pts2 = np.float32([kp[m.trainIdx].pt for m in matches])
+
+        E, mask = cv2.findEssentialMat(pts2, pts1, K, method=cv2.RANSAC,
+                                        prob=0.999, threshold=1.5)
+        if E is None or E.shape != (3, 3):
+            state.update({'prev_kp': kp, 'prev_des': des})
+            return [], []
+
+        _, R, t, mask_pose = cv2.recoverPose(E, pts2, pts1, K)
+        mask_pose = mask_pose.ravel() > 0
+        pts1_in = pts1[mask_pose]
+        pts2_in = pts2[mask_pose]
+
+        if len(pts1_in) < 8:
+            state.update({'prev_kp': kp, 'prev_des': des})
+            return [], []
+
+        P1 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+        P2 = K @ np.hstack((R, t))
+
+        pts4d = cv2.triangulatePoints(P1, P2, pts1_in.T, pts2_in.T)
+        pts3d = (pts4d[:3] / pts4d[3]).T
+
+        valid = np.isfinite(pts3d).all(axis=1) & (np.linalg.norm(pts3d, axis=1) < 30)
+        pts3d = pts3d[valid]
+        pts2_valid = pts2_in[valid]
+
+        if len(pts3d) == 0:
+            state.update({'prev_kp': kp, 'prev_des': des})
+            return [], []
+
+        # Transforma para o referencial global acumulado da sessão
+        pose = state.get('pose', np.eye(4))
+        pts3d_h = np.hstack([pts3d, np.ones((len(pts3d), 1))])
+        pts_global = (pose @ pts3d_h.T).T[:, :3]
+
+        # Amostra a cor de cada ponto na imagem atual
+        colors = []
+        for (x, y) in pts2_valid:
+            xi = int(np.clip(x, 0, w - 1))
+            yi = int(np.clip(y, 0, h - 1))
+            b, g, r = img[yi, xi]
+            colors.append([r / 255.0, g / 255.0, b / 255.0])
+
+        # Atualiza a pose acumulada (câmera atual em relação ao referencial global)
+        T21 = np.eye(4)
+        T21[:3, :3] = R
+        T21[:3, 3] = t.ravel()
+        new_pose = pose @ np.linalg.inv(T21)
+
+        state['pose'] = new_pose
+        state['prev_kp'] = kp
+        state['prev_des'] = des
+
+        return pts_global.tolist(), colors
+
+    except Exception:
+        state.update({'prev_kp': kp, 'prev_des': des})
+        return [], []
+
+
 # ── FRONTEND ───────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
@@ -174,13 +282,25 @@ def upload_frame():
         db.execute('UPDATE sessions SET frame_count=?, updated=? WHERE sid=?',
                    (idx + 1, time.time(), sid))
 
-    # Notifica via WebSocket
+    # Notifica via WebSocket (contador de frames)
     socketio.emit('frame_received', {
         'session_id': sid,
         'frame_index': idx,
         'total': idx + 1,
         'keypoints': len(kp)
     })
+
+    # Preview 3D ao vivo (aproximado) — nunca trava o upload se falhar
+    try:
+        new_pts, new_cols = _process_live_frame(sid, img)
+        if new_pts:
+            socketio.emit('live_points', {
+                'session_id': sid,
+                'new_points': new_pts,
+                'new_colors': new_cols
+            })
+    except Exception:
+        pass
 
     return jsonify({'frame_index': idx, 'keypoints': len(kp), 'total_frames': idx + 1})
 
@@ -206,6 +326,9 @@ def process_scan():
     with get_db() as db:
         db.execute('UPDATE sessions SET status=?, updated=? WHERE sid=?',
                    ('processing', time.time(), sid))
+
+    # Libera o estado de odometria ao vivo (não é mais necessário)
+    live_odometry.pop(sid, None)
 
     t = threading.Thread(target=_run_reconstruction, args=(sid,))
     t.daemon = True

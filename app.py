@@ -45,6 +45,24 @@ else:
 # por mais que isso (em segundos), é marcada como erro automaticamente.
 PROCESSING_WATCHDOG_SECONDS = 20 * 60  # 20 minutos
 
+# Largura máxima de cada frame salvo, em pixels. Fotos de celular podem vir
+# em resoluções bem maiores que o solicitado no getUserMedia (alguns
+# aparelhos ignoram o "ideal" e mandam a resolução nativa da câmera, que
+# pode ser 4K ou mais). Redimensionar aqui garante um limite real e
+# previsível de memória para o COLMAP, evitando OOM em ambientes com RAM
+# limitada como o plano gratuito do Railway.
+MAX_FRAME_WIDTH = 1280
+
+
+def _resize_max_width(img, max_width):
+    """Redimensiona a imagem mantendo a proporção, se ela for mais larga que max_width."""
+    h, w = img.shape[:2]
+    if w <= max_width:
+        return img
+    scale = max_width / float(w)
+    new_size = (max_width, int(h * scale))
+    return cv2.resize(img, new_size, interpolation=cv2.INTER_AREA)
+
 # ── SESSÕES PERSISTENTES (SQLite) ───────────────────────────────────────────────
 # Guardamos o estado das sessões em disco (no volume persistente do Railway)
 # para sobreviver a reinícios do container. Isso evita que o frontend fique
@@ -298,9 +316,17 @@ def upload_frame():
     if img is None:
         return jsonify({'error': 'Frame inválido'}), 400
 
+    # Redimensiona a imagem no servidor, independente da resolução que o
+    # celular mandou. Isso garante um limite REAL de memória — o parâmetro
+    # --SiftExtraction.max_image_size do COLMAP só limita o processamento
+    # interno, mas a imagem inteira ainda seria carregada na RAM antes disso.
+    # Fotos de celular podem vir em resoluções bem maiores que o solicitado
+    # (ex: 1920x1080 ou mais), e isso é o que estava estourando a memória.
+    img = _resize_max_width(img, MAX_FRAME_WIDTH)
+
     idx      = len(sessions[sid])
     img_path = os.path.join(DATA_DIR, sid, 'images', f'{idx:04d}.jpg')
-    cv2.imwrite(img_path, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    cv2.imwrite(img_path, img, [cv2.IMWRITE_JPEG_QUALITY, 90])
     sessions[sid].append(img_path)
 
     # Keypoints para feedback
@@ -415,8 +441,8 @@ def _run_reconstruction(sid):
         # com RAM limitada (como o plano gratuito do Railway).
         cmd = (f'"{COLMAP}" feature_extractor --database_path "{db_path}" '
                f'--image_path "{img_dir}" --ImageReader.single_camera 1 '
-               f'--SiftExtraction.use_gpu 0 --SiftExtraction.max_image_size 1600 '
-               f'--SiftExtraction.max_num_features 4096')
+               f'--SiftExtraction.use_gpu 0 --SiftExtraction.max_image_size 1280 '
+               f'--SiftExtraction.max_num_features 2048')
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
         _check_colmap_result(r, 'Feature extraction')
 

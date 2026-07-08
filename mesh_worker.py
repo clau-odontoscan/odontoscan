@@ -20,6 +20,19 @@ Uso: python3 mesh_worker.py <entrada.npz> <pasta_saida> <saida.npz>
 """
 import sys
 import os
+
+# IMPORTANTE: define isso ANTES de importar numpy/open3d. Essas bibliotecas
+# usam OpenMP/BLAS internamente e, por padrão, tentam usar "todos os núcleos
+# disponíveis". Em containers como o Railway, às vezes o processo enxerga
+# mais núcleos "virtuais" do que a cota real de CPU permite — isso causa
+# troca de contexto excessiva e pode transformar um cálculo de poucos
+# segundos em vários minutos. Fixamos um número baixo para evitar isso
+# (mesmo problema que já corrigimos no COLMAP com --num_threads).
+os.environ.setdefault('OMP_NUM_THREADS', '2')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '2')
+os.environ.setdefault('MKL_NUM_THREADS', '2')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '2')
+
 import numpy as np
 
 try:

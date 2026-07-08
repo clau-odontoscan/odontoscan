@@ -479,6 +479,7 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
         <div class="psec-title">Câmera</div>
         <div class="cam-wrap" id="camWrap">
           <video id="camVideo" autoplay muted playsinline></video>
+          <canvas id="camKeypoints" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none"></canvas>
           <div class="cam-hud">
             <div class="cam-corner tl"></div><div class="cam-corner tr"></div>
             <div class="cam-corner bl"></div><div class="cam-corner br"></div>
@@ -685,8 +686,7 @@ const API = window.location.origin + '/api';
 const S = {
   stream:null, capturing:false, captureIv:null,
   frameCount:0, frames:[], sessionId:null, scans:[],
-  treat:null, tooth:null, toothData:{}, tab:'scan',
-  livePoints:[], liveColors:[]
+  treat:null, tooth:null, toothData:{}, tab:'scan'
 };
 
 const TOOTH_NAMES = {
@@ -708,7 +708,7 @@ const TREAT_INFO = {
 // ════════════════════════════════════════
 // THREE.JS
 // ════════════════════════════════════════
-let scene, cam3d, rend3d, cloudObj, liveCloudObj;
+let scene, cam3d, rend3d, cloudObj;
 let cDist=3, cTheta=.3, cPhi=1.1;
 let drag=false, pm={x:0,y:0}, prevT=null;
 
@@ -763,54 +763,44 @@ function updateCam3d(){
 function zoom3d(f){cDist=Math.max(.5,Math.min(12,cDist*f));updateCam3d()}
 function reset3dCam(){cDist=3;cTheta=.3;cPhi=1.1;updateCam3d()}
 
-function clearLiveCloud(){
-  if(liveCloudObj){
-    scene.remove(liveCloudObj);
-    liveCloudObj.geometry.dispose();
-    liveCloudObj.material.dispose();
-    liveCloudObj=null;
-  }
-  S.livePoints=[]; S.liveColors=[];
-}
+// Desenha os pontos de interesse (keypoints ORB) detectados no frame atual,
+// sobrepostos na própria imagem da câmera. É um feedback honesto de que o
+// sistema está reconhecendo textura suficiente na região — não é uma
+// reconstrução 3D (isso só a versão final, via COLMAP + Poisson, entrega).
+function drawKeypointsOverlay(points, imgW, imgH){
+  const canvas = document.getElementById('camKeypoints');
+  const wrap = document.getElementById('camWrap');
+  if(!canvas || !wrap || !imgW || !imgH) return;
 
-function appendLivePoints(newPoints, newColors){
-  if(!newPoints || !newPoints.length) return;
-  S.livePoints = S.livePoints.concat(newPoints);
-  S.liveColors = S.liveColors.concat(newColors);
-  renderLiveCloud();
-}
+  const dispW = wrap.clientWidth, dispH = wrap.clientHeight;
+  canvas.width = dispW; canvas.height = dispH;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,dispW,dispH);
+  if(!points || !points.length) return;
 
-function renderLiveCloud(){
-  if(!S.livePoints.length) return;
-  document.getElementById('ph').style.display='none';
+  // O vídeo usa object-fit:cover — precisamos replicar esse mapeamento
+  // (escala + corte) para os pontos caírem no lugar certo visualmente.
+  const scale = Math.max(dispW/imgW, dispH/imgH);
+  const scaledW = imgW*scale, scaledH = imgH*scale;
+  const offsetX = (dispW-scaledW)/2, offsetY = (dispH-scaledH)/2;
 
-  if(liveCloudObj){
-    scene.remove(liveCloudObj);
-    liveCloudObj.geometry.dispose();
-    liveCloudObj.material.dispose();
-  }
-
-  const g=new THREE.BufferGeometry();
-  const pos=new Float32Array(S.livePoints.length*3);
-  const col=new Float32Array(S.livePoints.length*3);
-  S.livePoints.forEach((p,i)=>{
-    pos[i*3]=p[0]; pos[i*3+1]=p[1]; pos[i*3+2]=p[2];
-    const c=S.liveColors[i]||[.8,.8,.8];
-    col[i*3]=c[0]; col[i*3+1]=c[1]; col[i*3+2]=c[2];
+  ctx.fillStyle = 'rgba(0,212,180,.85)';
+  points.forEach(([x,y])=>{
+    const dx = x*scale+offsetX, dy = y*scale+offsetY;
+    ctx.beginPath();
+    ctx.arc(dx,dy,2.5,0,Math.PI*2);
+    ctx.fill();
   });
-  g.setAttribute('position', new THREE.BufferAttribute(pos,3));
-  g.setAttribute('color', new THREE.BufferAttribute(col,3));
-  liveCloudObj = new THREE.Points(g, new THREE.PointsMaterial({size:.014, vertexColors:true, sizeAttenuation:true, transparent:true, opacity:.85}));
-  liveCloudObj._spin=false;
-  scene.add(liveCloudObj);
+}
 
-  document.getElementById('vinfo').classList.add('show');
-  document.getElementById('vinfoTitle').textContent='🔴 Capturando ao vivo...';
-  document.getElementById('vinfoSub').textContent=S.livePoints.length+' pontos (preview aproximado)';
+function clearKeypointsOverlay(){
+  const canvas = document.getElementById('camKeypoints');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
 }
 
 function loadCloud(pts, colors, name, meta){
-  clearLiveCloud();
   if(cloudObj){scene.remove(cloudObj);cloudObj.geometry.dispose();}
   document.getElementById('ph').style.display='none';
   const g=new THREE.BufferGeometry();
@@ -823,7 +813,7 @@ function loadCloud(pts, colors, name, meta){
   g.setAttribute('position',new THREE.BufferAttribute(pos,3));
   g.setAttribute('color',new THREE.BufferAttribute(col,3));
   cloudObj=new THREE.Points(g,new THREE.PointsMaterial({size:.018,vertexColors:true,sizeAttenuation:true}));
-  cloudObj._spin=true;
+  cloudObj._spin=false;
   scene.add(cloudObj);
   document.getElementById('vinfo').classList.add('show');
   document.getElementById('vinfoTitle').textContent=name;
@@ -868,9 +858,9 @@ function initSocket(){
       toast('Erro: '+d.error,'err');
       document.getElementById('btnProcess').disabled=false;
     });
-    socket.on('live_points',d=>{
+    socket.on('frame_keypoints',d=>{
       if(d.session_id!==S.sessionId)return;
-      appendLivePoints(d.new_points, d.new_colors);
+      drawKeypointsOverlay(d.points, d.img_width, d.img_height);
     });
   }catch(e){console.log('Socket.IO indisponível')}
 }
@@ -939,7 +929,7 @@ async function startCapture(){
   }catch(e){toast('Erro ao conectar backend: '+e.message,'err');return}
 
   S.frameCount=0; S.frames=[]; S._scanName=name; S.capturing=true;
-  clearLiveCloud();
+  clearKeypointsOverlay();
   if(cloudObj){scene.remove(cloudObj);cloudObj.geometry.dispose();cloudObj=null;}
   document.getElementById('ph').style.display='none';
   document.getElementById('vaPresent').classList.remove('show');
@@ -950,7 +940,7 @@ async function startCapture(){
   document.getElementById('btnStop').style.display=''; document.getElementById('btnStop').disabled=false;
   document.getElementById('btnProcess').disabled=true;
   S.captureIv=setInterval(captureFrame,350);
-  toast('Captura iniciada! Gire o modelo devagar — o preview vai se formando na tela.','ok');
+  toast('Captura iniciada! Gire o modelo devagar pela superfície.','ok');
 }
 
 function stopCapture(){
@@ -1045,7 +1035,7 @@ function renderScanList(){
 
 function resetScan(){
   S.frameCount=0; S.frames=[];
-  clearLiveCloud();
+  clearKeypointsOverlay();
   document.getElementById('camFps').textContent='0 frames';
   document.getElementById('qualFill').style.width='0';
   document.getElementById('qualVal').textContent='—';

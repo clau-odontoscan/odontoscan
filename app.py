@@ -122,143 +122,6 @@ def _rebuild_frame_cache(sid):
     sessions[sid] = [os.path.join(img_dir, f) for f in files]
 
 
-# ── PREVIEW 3D AO VIVO (odometria visual leve) ──────────────────────────────
-# Enquanto o dentista captura os frames, fazemos uma estimativa RÁPIDA e
-# aproximada da posição 3D dos pontos usando odometria visual simples
-# (ORB + Matriz Essencial + triangulação). Isso é só para dar feedback
-# visual imediato — "colando" a imagem na tela conforme os frames chegam.
-# Não substitui a reconstrução completa via COLMAP + Poisson, que é muito
-# mais precisa e roda só quando o dentista clica em "Gerar Modelo 3D".
-live_odometry = {}
-
-
-def _process_live_frame(sid, img):
-    """
-    Recebe um frame e retorna (novos_pontos_3d, novas_cores) estimados por
-    odometria visual em relação ao frame anterior da mesma sessão.
-    Extremamente tolerante a falhas: qualquer problema retorna listas vazias
-    em vez de lançar exceção, para nunca travar o upload do frame.
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape[:2]
-    focal = float(w)
-    pp = (w / 2.0, h / 2.0)
-    K = np.array([[focal, 0, pp[0]], [0, focal, pp[1]], [0, 0, 1]])
-
-    orb = cv2.ORB_create(800)
-    kp, des = orb.detectAndCompute(gray, None)
-
-    state = live_odometry.get(sid)
-
-    if state is None or des is None or len(kp) < 8:
-        live_odometry[sid] = {'prev_kp': kp, 'prev_des': des, 'pose': np.eye(4)}
-        return [], []
-
-    prev_des = state.get('prev_des')
-    if prev_des is None:
-        state.update({'prev_kp': kp, 'prev_des': des})
-        return [], []
-
-    try:
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        matches = bf.match(prev_des, des)
-        if len(matches) < 15:
-            state.update({'prev_kp': kp, 'prev_des': des})
-            return [], []
-
-        matches = sorted(matches, key=lambda m: m.distance)[:250]
-        prev_kp = state['prev_kp']
-        pts1 = np.float32([prev_kp[m.queryIdx].pt for m in matches])
-        pts2 = np.float32([kp[m.trainIdx].pt for m in matches])
-
-        E, mask = cv2.findEssentialMat(pts2, pts1, K, method=cv2.RANSAC,
-                                        prob=0.999, threshold=1.5)
-        if E is None or E.shape != (3, 3):
-            state.update({'prev_kp': kp, 'prev_des': des})
-            return [], []
-
-        _, R, t, mask_pose = cv2.recoverPose(E, pts2, pts1, K)
-        mask_pose = mask_pose.ravel() > 0
-        pts1_in = pts1[mask_pose]
-        pts2_in = pts2[mask_pose]
-
-        # Se poucos matches confirmaram a pose (ex: superfície muito lisa/sem
-        # textura, como uma tampa de caneta, ou movimento brusco), a
-        # estimativa é pouco confiável — melhor não gerar pontos nesse frame
-        # do que gerar "pontos-fantasma" distantes (efeito cometa).
-        inlier_ratio = mask_pose.sum() / max(len(matches), 1)
-        if len(pts1_in) < 8 or inlier_ratio < 0.20:
-            state.update({'prev_kp': kp, 'prev_des': des})
-            return [], []
-
-        P1 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-        P2 = K @ np.hstack((R, t))
-
-        pts4d = cv2.triangulatePoints(P1, P2, pts1_in.T, pts2_in.T)
-        pts3d = (pts4d[:3] / pts4d[3]).T
-
-        finite = np.isfinite(pts3d).all(axis=1)
-        dist_ok = np.zeros(len(pts3d), dtype=bool)
-        dist_ok[finite] = np.linalg.norm(pts3d[finite], axis=1) < 30
-        pts3d = pts3d[dist_ok]
-        pts1_f = pts1_in[dist_ok]
-        pts2_f = pts2_in[dist_ok]
-
-        if len(pts3d) == 0:
-            state.update({'prev_kp': kp, 'prev_des': des})
-            return [], []
-
-        # Filtra por erro de reprojeção: descarta pontos que, ao serem
-        # projetados de volta nas duas câmeras, não batem com os pixels
-        # originais — são justamente os "pontos-fantasma" que geram o
-        # efeito de cauda/cometa esparso no preview.
-        pts3d_h = np.hstack([pts3d, np.ones((len(pts3d), 1))])
-
-        def _reproj_err(P, pts3d_hom, pts2d):
-            proj = P @ pts3d_hom.T
-            proj = (proj[:2] / proj[2]).T
-            return np.linalg.norm(proj - pts2d, axis=1)
-
-        err1 = _reproj_err(P1, pts3d_h, pts1_f)
-        err2 = _reproj_err(P2, pts3d_h, pts2_f)
-        good = (err1 < 8.0) & (err2 < 8.0)
-
-        pts3d = pts3d[good]
-        pts2_valid = pts2_f[good]
-
-        if len(pts3d) == 0:
-            state.update({'prev_kp': kp, 'prev_des': des})
-            return [], []
-
-        # Transforma para o referencial global acumulado da sessão
-        pose = state.get('pose', np.eye(4))
-        pts3d_h = np.hstack([pts3d, np.ones((len(pts3d), 1))])
-        pts_global = (pose @ pts3d_h.T).T[:, :3]
-
-        # Amostra a cor de cada ponto na imagem atual
-        colors = []
-        for (x, y) in pts2_valid:
-            xi = int(np.clip(x, 0, w - 1))
-            yi = int(np.clip(y, 0, h - 1))
-            b, g, r = img[yi, xi]
-            colors.append([r / 255.0, g / 255.0, b / 255.0])
-
-        # Atualiza a pose acumulada (câmera atual em relação ao referencial global)
-        T21 = np.eye(4)
-        T21[:3, :3] = R
-        T21[:3, 3] = t.ravel()
-        new_pose = pose @ np.linalg.inv(T21)
-
-        state['pose'] = new_pose
-        state['prev_kp'] = kp
-        state['prev_des'] = des
-
-        return pts_global.tolist(), colors
-
-    except Exception:
-        state.update({'prev_kp': kp, 'prev_des': des})
-        return [], []
-
 
 # ── FRONTEND ───────────────────────────────────────────────────────────────────
 @app.route('/')
@@ -347,15 +210,20 @@ def upload_frame():
         'keypoints': len(kp)
     })
 
-    # Preview 3D ao vivo (aproximado) — nunca trava o upload se falhar
+    # Envia os pontos de interesse detectados (2D, na própria imagem) via
+    # WebSocket — feedback visual honesto de que o sistema está reconhecendo
+    # textura suficiente na região capturada, sem fingir ser uma
+    # reconstrução 3D em tempo real (que exigiria hardware de profundidade
+    # como scanners profissionais têm, e que não temos aqui).
     try:
-        new_pts, new_cols = _process_live_frame(sid, img)
-        if new_pts:
-            socketio.emit('live_points', {
-                'session_id': sid,
-                'new_points': new_pts,
-                'new_colors': new_cols
-            })
+        h, w = gray.shape[:2]
+        points_2d = [[float(k.pt[0]), float(k.pt[1])] for k in kp]
+        socketio.emit('frame_keypoints', {
+            'session_id': sid,
+            'points': points_2d,
+            'img_width': w,
+            'img_height': h
+        })
     except Exception:
         pass
 
@@ -383,9 +251,6 @@ def process_scan():
     with get_db() as db:
         db.execute('UPDATE sessions SET status=?, updated=? WHERE sid=?',
                    ('processing', time.time(), sid))
-
-    # Libera o estado de odometria ao vivo (não é mais necessário)
-    live_odometry.pop(sid, None)
 
     t = threading.Thread(target=_run_reconstruction, args=(sid,))
     t.daemon = True
@@ -542,9 +407,12 @@ def _run_reconstruction(sid):
         worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mesh_worker.py')
         cmd = ['python3', worker_path, input_npz, base, output_npz]
         try:
+            if not os.path.exists(worker_path):
+                raise Exception(f'mesh_worker.py não encontrado em {worker_path}')
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
             if r.returncode != 0 or not os.path.exists(output_npz):
-                raise Exception('Worker de malha falhou: ' + (r.stderr[-300:] if r.stderr else 'sem saída'))
+                err_detail = (r.stderr or 'sem saída de erro').strip()[-500:]
+                raise Exception(f'Worker de malha falhou (código {r.returncode}): {err_detail}')
             out = np.load(output_npz, allow_pickle=True)
             pts, cols = out['pts'], out['cols']
             method_used = str(out['method_used'])
@@ -554,8 +422,16 @@ def _run_reconstruction(sid):
             # nuvem original (sem densificar/sem malha), em vez de travar.
             method_used = 'COLMAP SfM (nuvem bruta — malha demorou demais)'
             has_stl = False
-        except Exception:
-            method_used = 'COLMAP SfM (nuvem bruta — falha ao gerar malha)'
+        except Exception as mesh_err:
+            # Guarda o erro REAL (não escondido) para diagnóstico — visível
+            # no campo 'error' da sessão, mesmo o scan tendo "terminado" com
+            # a nuvem bruta em vez de travar tudo. Também imprime nos logs
+            # do Railway para ser fácil de consultar.
+            print(f'[mesh_worker ERROR] sessão {sid}: {mesh_err}', flush=True)
+            with get_db() as db:
+                db.execute('UPDATE sessions SET error=? WHERE sid=?',
+                           (f'[malha] {str(mesh_err)[:400]}', sid))
+            method_used = 'COLMAP SfM (nuvem bruta — malha falhou, ver detalhes)'
             has_stl = False
 
         _update(sid, 92, 'Finalizando resultado...')

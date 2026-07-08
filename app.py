@@ -409,7 +409,7 @@ def _run_reconstruction(sid):
         try:
             if not os.path.exists(worker_path):
                 raise Exception(f'mesh_worker.py não encontrado em {worker_path}')
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=360)
             if r.returncode != 0 or not os.path.exists(output_npz):
                 err_detail = (r.stderr or 'sem saída de erro').strip()[-500:]
                 raise Exception(f'Worker de malha falhou (código {r.returncode}): {err_detail}')

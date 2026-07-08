@@ -187,7 +187,7 @@ def _process_live_frame(sid, img):
         # estimativa é pouco confiável — melhor não gerar pontos nesse frame
         # do que gerar "pontos-fantasma" distantes (efeito cometa).
         inlier_ratio = mask_pose.sum() / max(len(matches), 1)
-        if len(pts1_in) < 8 or inlier_ratio < 0.35:
+        if len(pts1_in) < 8 or inlier_ratio < 0.20:
             state.update({'prev_kp': kp, 'prev_des': des})
             return [], []
 
@@ -221,7 +221,7 @@ def _process_live_frame(sid, img):
 
         err1 = _reproj_err(P1, pts3d_h, pts1_f)
         err2 = _reproj_err(P2, pts3d_h, pts2_f)
-        good = (err1 < 4.0) & (err2 < 4.0)
+        good = (err1 < 8.0) & (err2 < 8.0)
 
         pts3d = pts3d[good]
         pts2_valid = pts2_f[good]
@@ -525,46 +525,40 @@ def _run_reconstruction(sid):
         pts  = np.array(points)
         cols = np.array(colors)
 
-        # ── PASSO 6: Remove outliers ──
-        _update(sid, 80, 'Removendo outliers estatisticamente...')
-        pts, cols = _remove_outliers(pts, cols)
+        # ── PASSOS 6-9: Limpeza, densificação e geração de malha ──────────
+        # Executados em um PROCESSO SEPARADO (mesh_worker.py), não numa
+        # thread. Isso é essencial: o servidor roda sob eventlet, que torna
+        # threads "cooperativas" (compartilham o mesmo processo do SO). Um
+        # cálculo pesado do Open3D (Poisson) pode travar esse processo
+        # inteiro, inclusive o próprio mecanismo de timeout. Rodando como
+        # processo separado, o timeout do subprocess.run é imposto pelo
+        # sistema operacional de verdade — se estourar, o processo é morto
+        # (SIGKILL) e o scan segue em frente, sem travar o servidor.
+        _update(sid, 80, 'Processando nuvem de pontos e gerando malha 3D...')
+        input_npz  = os.path.join(base, 'mesh_input.npz')
+        output_npz = os.path.join(base, 'mesh_output.npz')
+        np.savez(input_npz, pts=pts, cols=cols)
 
-        # ── PASSO 7: Densifica nuvem (com limite de tempo real) ──
-        _update(sid, 85, 'Densificando nuvem de pontos...')
-        # Se a nuvem já estiver muito grande, pular a densificação —
-        # ela multiplica os pontos por ~4x, o que ficaria desnecessariamente
-        # pesado (e mais lento) em nuvens já densas.
-        if len(pts) <= 4000:
-            try:
-                pts, cols = _run_with_timeout(_densify, (pts, cols), timeout=90)
-            except Exception:
-                # Timeout ou qualquer erro: segue com a nuvem sem densificar,
-                # em vez de travar o scan inteiro.
-                pass
+        worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mesh_worker.py')
+        cmd = ['python3', worker_path, input_npz, base, output_npz]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+            if r.returncode != 0 or not os.path.exists(output_npz):
+                raise Exception('Worker de malha falhou: ' + (r.stderr[-300:] if r.stderr else 'sem saída'))
+            out = np.load(output_npz, allow_pickle=True)
+            pts, cols = out['pts'], out['cols']
+            method_used = str(out['method_used'])
+            has_stl = bool(out['has_stl'])
+        except subprocess.TimeoutExpired:
+            # Processo foi morto de verdade pelo SO após 240s — segue com a
+            # nuvem original (sem densificar/sem malha), em vez de travar.
+            method_used = 'COLMAP SfM (nuvem bruta — malha demorou demais)'
+            has_stl = False
+        except Exception:
+            method_used = 'COLMAP SfM (nuvem bruta — falha ao gerar malha)'
+            has_stl = False
 
-        # ── PASSO 8: Normaliza ──
-        center = pts.mean(axis=0)
-        pts   -= center
-        scale  = np.percentile(np.abs(pts), 95)
-        if scale > 0:
-            pts /= scale
-
-        # ── PASSO 9: Gera malha 3D (Poisson via Open3D, com fallback e timeout real) ──
-        _update(sid, 92, 'Reconstruindo superfície com Poisson...')
-        stl_path = None
-        method_used = 'Convex Hull (fallback)'
-        if HAS_OPEN3D:
-            try:
-                stl_path = _run_with_timeout(_make_mesh_poisson, (pts, cols, base), timeout=120)
-                method_used = 'COLMAP SfM + Open3D Poisson'
-            except Exception:
-                stl_path = None
-        if stl_path is None:
-            try:
-                stl_path = _run_with_timeout(_make_mesh, (pts, cols, base), timeout=60)
-                method_used = 'COLMAP SfM + Convex Hull (fallback)'
-            except Exception:
-                stl_path = None
+        _update(sid, 92, 'Finalizando resultado...')
 
         # ── PASSO 10: Salva resultado ──
         _update(sid, 97, 'Salvando resultado...')
@@ -576,7 +570,7 @@ def _run_reconstruction(sid):
             'point_count':  len(pts),
             'frame_count':  frame_count,
             'method':       method_used,
-            'has_stl':      stl_path is not None
+            'has_stl':      has_stl
         }
         with open(os.path.join(base, 'result.json'), 'w') as f:
             json.dump(result, f)

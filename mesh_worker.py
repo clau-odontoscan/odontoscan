@@ -121,39 +121,75 @@ def main():
     input_npz, base_dir, output_npz = sys.argv[1], sys.argv[2], sys.argv[3]
     data = np.load(input_npz)
     pts, cols = data['pts'], data['cols']
+    original_pts, original_cols = pts.copy(), cols.copy()
 
-    # Remove outliers
-    pts, cols = remove_outliers(pts, cols)
+    # Remove outliers — se falhar por qualquer motivo, segue com a nuvem
+    # original em vez de interromper o script inteiro.
+    try:
+        pts, cols = remove_outliers(pts, cols)
+    except Exception as e:
+        print(f'[remove_outliers] falhou, seguindo sem filtrar: {e}', file=sys.stderr)
+        pts, cols = original_pts, original_cols
 
     # Densifica só se a nuvem não for grande demais
     if len(pts) <= 4000:
-        pts, cols = densify(pts, cols)
+        try:
+            pts, cols = densify(pts, cols)
+        except Exception as e:
+            print(f'[densify] falhou, seguindo sem densificar: {e}', file=sys.stderr)
 
-    # Normaliza
-    center = pts.mean(axis=0)
-    pts = pts - center
-    scale = np.percentile(np.abs(pts), 95)
-    if scale > 0:
-        pts = pts / scale
+    # Normaliza — protegido, embora dificilmente falhe
+    try:
+        center = pts.mean(axis=0)
+        pts = pts - center
+        scale = np.percentile(np.abs(pts), 95)
+        if scale > 0:
+            pts = pts / scale
+    except Exception as e:
+        print(f'[normalização] falhou: {e}', file=sys.stderr)
 
     stl_path = None
-    method_used = 'Convex Hull (fallback)'
+    method_used = 'COLMAP SfM (nuvem bruta)'
     if HAS_OPEN3D:
         try:
             stl_path = make_mesh_poisson(pts, cols, base_dir)
             method_used = 'COLMAP SfM + Open3D Poisson'
-        except Exception:
+        except Exception as e:
+            print(f'[Poisson] falhou: {e}', file=sys.stderr)
             stl_path = None
     if stl_path is None:
         try:
             stl_path = make_mesh_convexhull(pts, cols, base_dir)
             method_used = 'COLMAP SfM + Convex Hull (fallback)'
-        except Exception:
+        except Exception as e:
+            # Causa comum: pontos quase coplanares (pouco movimento de
+            # câmera/paralaxe), o que faz o ConvexHull falhar por não
+            # conseguir formar um volume 3D válido (QhullError).
+            print(f'[ConvexHull] falhou: {e}', file=sys.stderr)
             stl_path = None
+            method_used = 'COLMAP SfM (nuvem bruta — sem malha)'
 
+    # SEMPRE escreve um resultado, mesmo que tudo acima tenha falhado —
+    # o app.py depende deste arquivo existir para não travar o scan.
     np.savez(output_npz, pts=pts, cols=cols,
              method_used=method_used, has_stl=stl_path is not None)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Última rede de segurança: se algo inesperado quebrar o script
+        # inteiro (ex: arquivo de entrada corrompido), ainda tentamos
+        # escrever um resultado mínimo em vez de simplesmente crashar
+        # sem deixar rastro.
+        print(f'[mesh_worker] erro fatal: {e}', file=sys.stderr)
+        try:
+            input_npz, base_dir, output_npz = sys.argv[1], sys.argv[2], sys.argv[3]
+            data = np.load(input_npz)
+            np.savez(output_npz, pts=data['pts'], cols=data['cols'],
+                     method_used=f'Falha no processamento: {str(e)[:200]}',
+                     has_stl=False)
+        except Exception:
+            pass
+        sys.exit(1)

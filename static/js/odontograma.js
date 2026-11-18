@@ -5,6 +5,8 @@ const ODO = {
   canvas: null, ctx: null,
   selected: null, hovered: null,
   teeth: {},
+  state: {},          // {num: {treat, faces, notes}} — sobrevive a resize/troca de aba
+  W: 800, H: 400,     // tamanho em px CSS
   treatColors: {
     carie:'#e05555', coroa:'#e8bc4e', implante:'#4a8fff',
     canal:'#a855f7', resina:'#00d4b8', limpeza:'#f0c040', extraido:'#666666'
@@ -24,26 +26,41 @@ const ODO = {
   },
 
   resize() {
-    const cont = this.canvas.parentElement;
-    this.canvas.width  = cont.clientWidth  || 800;
-    this.canvas.height = cont.clientHeight || 400;
+    const r = this.canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    this.W = Math.round(r.width)  || this.W || 800;
+    this.H = Math.round(r.height) || this.H || 400;
+    this.canvas.width  = this.W * dpr;
+    this.canvas.height = this.H * dpr;
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  },
+
+  setState(state) {
+    this.state = state || {};
+    Object.values(this.teeth).forEach(t => {
+      const s = this.state[t.num] || {};
+      t.treat = s.treat || null; t.faces = s.faces || []; t.notes = s.notes || '';
+    });
   },
 
   // Gera posições dos dentes em grade limpa
   buildTeeth() {
-    const W = this.canvas.width;
-    const H = this.canvas.height;
+    const W = this.W;
+    const H = this.H;
     const cx = W / 2;
 
     // Espaçamento
     const gap = 2;
     // Larguras por tipo: siso=molar, molar, pm, canino, lateral, central
-    const widths = [32,34,30,26,22,24, 24,22,26,30,34,32,30,28,26,24];
+    const base = [32,34,36,26,24,26,22,24, 24,22,26,24,26,36,34,32];   // 18..11 | 21..28
+    const total = base.reduce((a, b) => a + b, 0) + gap * 17;
+    const k = Math.min(1.6, (W - 70) / total);                        // ajusta à largura da tela
+    const widths = base.map(w => w * k);
     // Superior: 18..11 | 21..28
     // Inferior: 48..41 | 31..38
 
     // Calcula posição X de cada dente (superior)
-    const toothH = Math.min(70, H * 0.30); // altura do dente
+    const toothH = Math.min(70 * Math.max(1, k), H * 0.30); // altura do dente
     const rootH  = Math.min(50, H * 0.22); // altura da raiz
     const archGap = Math.min(22, H * 0.08); // espaço entre arcadas
 
@@ -81,7 +98,6 @@ const ODO = {
       };
       xLeft += wL + gap;
     }
-
     // Arcada inferior — mesma lógica
     xRight = cx - gap/2;
     xLeft  = cx + gap/2;
@@ -105,6 +121,7 @@ const ODO = {
       };
       xLeft += wL + gap;
     }
+    this.setState(this.state);
   },
 
   _toothType(num) {
@@ -117,7 +134,7 @@ const ODO = {
 
   draw() {
     const ctx = this.ctx;
-    const W = this.canvas.width, H = this.canvas.height;
+    const W = this.W, H = this.H;
     ctx.clearRect(0,0,W,H);
 
     // Fundo
@@ -136,8 +153,11 @@ const ODO = {
     ctx.fillStyle = 'rgba(90,101,128,0.8)';
     ctx.font = '600 10px Inter,sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText('SUPERIOR', 12, midY - 20);
-    ctx.fillText('INFERIOR', 12, midY + 30);
+    const anyUp = this.teeth[18], anyLo = this.teeth[48];
+    if(anyUp && anyLo) {
+      ctx.fillText('SUPERIOR', 12, Math.max(12, anyUp.cy - anyUp.rootH - 8));
+      ctx.fillText('INFERIOR', 12, Math.min(H - 6, anyLo.cy + anyLo.toothH + anyLo.rootH + 16));
+    }
 
     // Linha central
     ctx.strokeStyle = 'rgba(0,212,184,0.3)';
@@ -250,6 +270,31 @@ const ODO = {
       ctx.stroke();
     }
 
+    // ── FACES afetadas ──
+    if(t.faces && t.faces.length && t.treat !== 'extraido') {
+      const fc = treatColor ? 'rgba(255,255,255,0.85)' : '#00d4b8';
+      const m = Math.max(2.5, w * 0.13);
+      const rightOfMid = (x + w/2) > this.W / 2;
+      const vestTop = !isUpper;             // superior: vestibular para cima (raiz); inferior: para baixo
+      ctx.fillStyle = fc;
+      t.faces.forEach(f => {
+        if(f === 'O') { ctx.beginPath(); ctx.arc(x + w/2, cy + toothH/2, Math.max(2.5, w*0.14), 0, Math.PI*2); ctx.fill(); }
+        if(f === 'V') ctx.fillRect(x + w*0.2, vestTop ? cy + toothH - m : cy + 1, w*0.6, m - 1);
+        if(f === 'L') ctx.fillRect(x + w*0.2, vestTop ? cy + 1 : cy + toothH - m, w*0.6, m - 1);
+        if(f === 'M') ctx.fillRect(rightOfMid ? x + 1 : x + w - m, cy + toothH*0.25, m - 1, toothH*0.5);
+        if(f === 'D') ctx.fillRect(rightOfMid ? x + w - m : x + 1, cy + toothH*0.25, m - 1, toothH*0.5);
+      });
+    }
+
+    // ── EXTRAÍDO ──
+    if(t.treat === 'extraido') {
+      ctx.strokeStyle = '#e05555'; ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(x + 3, cy + 3); ctx.lineTo(x + w - 3, cy + toothH - 3);
+      ctx.moveTo(x + w - 3, cy + 3); ctx.lineTo(x + 3, cy + toothH - 3);
+      ctx.stroke();
+    }
+
     // ── HIGHLIGHT selecionado ──
     if(isSelected) {
       ctx.strokeStyle = '#00d4b8';
@@ -297,7 +342,9 @@ const ODO = {
 
   getToothAt(mx, my) {
     for(const t of Object.values(this.teeth)) {
-      if(mx >= t.x && mx <= t.x + t.w && my >= t.cy && my <= t.cy + t.toothH)
+      const top = t.isUpper ? t.cy - t.rootH : t.cy;
+      const bot = t.isUpper ? t.cy + t.toothH : t.cy + t.toothH + t.rootH;
+      if(mx >= t.x - 1 && mx <= t.x + t.w + 1 && my >= top && my <= bot)
         return t.num;
     }
     return null;
@@ -324,6 +371,8 @@ const ODO = {
   },
 
   setTreat(num, treat) {
+    if(!this.state[num]) this.state[num] = {treat:null, faces:[], notes:''};
+    this.state[num].treat = treat;
     if(this.teeth[num]) { this.teeth[num].treat = treat; this.draw(); }
   },
 

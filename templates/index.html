@@ -314,6 +314,25 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
 #odoCanvas { flex:1; width:100%; display:block; cursor:pointer; touch-action:none }
 .odo-tip { text-align:center; padding:6px; font-size:.68rem; color:var(--muted); border-top:1px solid var(--line) }
 
+/* Marcador / histórico / extras */
+.mk-row { display:flex; align-items:center; gap:7px; font-size:.7rem; color:var(--muted2); margin-top:8px }
+.mk-row input { width:58px; background:var(--ink3); border:1px solid var(--line2); color:var(--text); border-radius:6px; padding:4px 6px; font-size:.75rem }
+.mk-row label { display:flex; align-items:center; gap:5px; cursor:pointer }
+.mk-row a { color:var(--teal); text-decoration:none; margin-left:auto }
+.scan-item { cursor:pointer }
+.si-err { font-size:.65rem; color:var(--red); margin-top:3px }
+.hist-list { flex:1; overflow-y:auto; padding:14px 16px; display:grid; gap:9px; align-content:start }
+.hist-row { display:flex; align-items:center; gap:12px; background:var(--ink2); border:1px solid var(--line); border-radius:var(--r2); padding:11px 14px }
+.hist-row .hr-main { flex:1; min-width:0 }
+.hist-row .hr-title { font-size:.85rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.hist-row .hr-sub { font-size:.68rem; color:var(--muted2); margin-top:3px }
+.hist-row button { background:var(--ink3); border:1px solid var(--line2); color:var(--text); border-radius:6px; padding:5px 10px; font-size:.7rem; cursor:pointer }
+.hist-row button:hover { border-color:var(--teal); color:var(--teal) }
+.hist-row button.del:hover { border-color:var(--red); color:var(--red) }
+.tc.extraido { border-color:rgba(120,120,120,.35) } .tc.extraido.active,.tc.extraido:hover { background:rgba(120,120,120,.12); border-color:#888 }
+.tc.limpar { border-style:dashed } .tc.limpar:hover { border-color:var(--muted2) }
+.save-ind { font-size:.62rem; color:var(--muted); margin-top:5px; min-height:12px }
+
 /* ══════════════════════════════════════
    MOBILE LAYOUT
 ══════════════════════════════════════ */
@@ -365,7 +384,8 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
   .odo-overlay { position:fixed !important; inset:54px 0 60px 0 !important; z-index:40 !important }
 
   /* Info e ações menores no mobile */
-  .vinfo { top:8px; left:8px; padding:7px 10px }
+  .vinfo { top:46px; left:8px; right:8px; padding:6px 10px }
+  .vinfo-sub { font-size:.62rem }
   .vinfo-title { font-size:.8rem }
   .vactions { top:8px; right:8px; gap:5px }
   .vact { font-size:.68rem; padding:5px 10px }
@@ -464,8 +484,8 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
       <div class="tab" onclick="switchTab('historico',this)">📁 Histórico</div>
     </div>
     <div class="patient-pill" onclick="editPatient()">
-      <div class="p-av" id="pAv">JD</div>
-      <span class="p-name" id="pName">João da Silva</span>
+      <div class="p-av" id="pAv">P</div>
+      <span class="p-name" id="pName">Paciente</span>
     </div>
   </div>
 
@@ -500,6 +520,11 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
           <button class="btn btn-teal" id="btnCapture" onclick="startCapture()" disabled>⏺ Iniciar Captura</button>
           <button class="btn btn-red" id="btnStop" onclick="stopCapture()" disabled style="display:none">⏹ Parar Captura</button>
           <button class="btn btn-gold" id="btnProcess" onclick="processFrames()" disabled>⚙️ Gerar Modelo 3D</button>
+          <div class="mk-row">
+            <label><input type="checkbox" id="mkUse" checked style="width:auto"> Marcador</label>
+            <input type="number" id="mkMm" value="20" min="5" max="100" step="0.1"> mm
+            <a href="#" onclick="printMarker();return false">🖨 Imprimir</a>
+          </div>
           <div class="prog" id="prog">
             <div class="prog-track"><div class="prog-fill" id="progFill"></div></div>
             <div class="prog-msg" id="progMsg">Aguardando...</div>
@@ -511,10 +536,10 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
         <div class="guide">
           <div class="guide-title">💡 Como escanear bem</div>
           <ol>
-            <li><div class="guide-num">1</div>Superfície clara, iluminação difusa uniforme</li>
-            <li><div class="guide-num">2</div>Gire o modelo 360° lentamente</li>
-            <li><div class="guide-num">3</div>30–50 frames, câmera a 20–30cm</li>
-            <li><div class="guide-num">4</div>Inclua ângulos superiores e laterais</li>
+            <li><div class="guide-num">1</div>Imprima o marcador (100%) e coloque ao lado do modelo — dá a medida em mm</li>
+            <li><div class="guide-num">2</div>Luz difusa e uniforme; gesso liso: risque com lápis ou use spray de escaneamento</li>
+            <li><div class="guide-num">3</div>Dê uma volta completa devagar, câmera a 15–25 cm (40–100 frames)</li>
+            <li><div class="guide-num">4</div>Faça uma segunda volta mais alta, mostrando as oclusais</li>
           </ol>
         </div>
       </div>
@@ -543,6 +568,7 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
       </div>
 
       <div class="vactions">
+        <div class="vact" id="vaMode" onclick="toggleViewMode()">◎ Nuvem</div>
         <div class="vact" id="vaPresent" onclick="enterPres()">👁 Apresentar</div>
         <div class="vact gold" id="vaStl" onclick="downloadSTL()">⬇ STL</div>
         <div class="vact" id="vaNew" onclick="resetScan()">＋ Novo</div>
@@ -556,16 +582,27 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
         <div class="vz" onclick="reset3dCam()">⟳</div>
       </div>
 
+      <!-- HISTÓRICO -->
+      <div class="odo-overlay" id="histOverlay">
+        <div class="odo-header">
+          <div class="odo-title">Histórico de Scans</div>
+          <label class="leg" style="cursor:pointer"><input type="checkbox" id="histOnlyPat" onchange="renderHistory()"> Só deste paciente</label>
+        </div>
+        <div class="hist-list" id="histList"></div>
+      </div>
+
       <!-- ODONTOGRAMA -->
       <div class="odo-overlay" id="odoOverlay">
         <div class="odo-header">
           <div class="odo-title">Odontograma Interativo</div>
           <div class="odo-legend">
-            <div class="leg"><div class="leg-dot" style="background:#e8f4ff"></div>Saudável</div>
+            <div class="leg"><div class="leg-dot" style="background:#2a3a55"></div>Saudável</div>
             <div class="leg"><div class="leg-dot" style="background:var(--red)"></div>Cárie</div>
             <div class="leg"><div class="leg-dot" style="background:var(--gold)"></div>Coroa</div>
             <div class="leg"><div class="leg-dot" style="background:var(--blue)"></div>Implante</div>
             <div class="leg"><div class="leg-dot" style="background:var(--purple)"></div>Canal</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--teal)"></div>Resina</div>
+            <div class="leg"><div class="leg-dot" style="background:var(--yellow)"></div>Limpeza</div>
             <div class="leg"><div class="leg-dot" style="background:#555"></div>Extraído</div>
           </div>
         </div>
@@ -580,8 +617,8 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
       <div class="psec">
         <div class="psec-title">Paciente</div>
         <div class="pinfo">
-          <div class="pinfo-name" id="rpName">João da Silva</div>
-          <div class="pinfo-sub">Retorno</div>
+          <div class="pinfo-name" id="rpName">Paciente</div>
+          <div class="pinfo-sub" id="rpSub">Odontograma salvo por paciente</div>
           <span class="pinfo-edit" onclick="editPatient()">✏️ Alterar</span>
         </div>
       </div>
@@ -595,6 +632,8 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
           <div class="tc canal"   onclick="selTreat('canal',this)"><div class="tc-icon">🔬</div><div class="tc-name">Canal</div><div class="tc-desc">Endodôntico</div></div>
           <div class="tc resina"  onclick="selTreat('resina',this)"><div class="tc-icon">✨</div><div class="tc-name">Resina</div><div class="tc-desc">Restauração</div></div>
           <div class="tc limpeza" onclick="selTreat('limpeza',this)"><div class="tc-icon">🪥</div><div class="tc-name">Limpeza</div><div class="tc-desc">Profilaxia</div></div>
+          <div class="tc extraido" onclick="selTreat('extraido',this)"><div class="tc-icon">✖️</div><div class="tc-name">Extraído</div><div class="tc-desc">Ausente</div></div>
+          <div class="tc limpar" onclick="clearTooth()"><div class="tc-icon">↺</div><div class="tc-name">Limpar dente</div><div class="tc-desc">Remove marcação</div></div>
         </div>
       </div>
 
@@ -617,14 +656,15 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
             <div class="face" data-face="O" onclick="toggleFace(this)">Ocl.</div>
           </div>
         </div>
-        <textarea class="notes" id="toothNotes" placeholder="Anotações clínicas..."></textarea>
+        <textarea class="notes" id="toothNotes" placeholder="Anotações clínicas..." oninput="saveNotes()"></textarea>
+        <div class="save-ind" id="saveInd"></div>
       </div>
 
       <div class="psec">
         <div class="psec-title">Ações</div>
         <div class="btns">
           <button class="btn btn-teal" onclick="enterPres()">👁 Apresentar ao Paciente</button>
-          <button class="btn btn-ghost" onclick="toast('PDF em breve!','info')">📄 Relatório PDF</button>
+          <button class="btn btn-ghost" onclick="printReport()">📄 Relatório / PDF</button>
           <button class="btn btn-ghost" onclick="downloadSTL()">📤 Exportar STL</button>
         </div>
       </div>
@@ -641,6 +681,9 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
       </button>
       <button class="mnav" id="mnav-treat" onclick="mobileNav('treat')">
         <div class="mnav-icon">⚕️</div><div class="mnav-label">Trat.</div>
+      </button>
+      <button class="mnav" id="mnav-hist" onclick="mobileNav('hist')">
+        <div class="mnav-icon">📁</div><div class="mnav-label">Hist.</div>
       </button>
       <button class="mnav" id="mnav-pres" onclick="enterPres()">
         <div class="mnav-icon">👁</div><div class="mnav-label">Mostrar</div>
@@ -673,8 +716,9 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
 <div class="toast" id="toast"></div>
 
 <!-- LIBS -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<script src="/static/vendor/three.min.js"></script>
+<script src="/static/vendor/PLYLoader.js"></script>
+<script src="/static/vendor/socket.io.min.js"></script>
 <script src="/static/js/odontograma.js"></script>
 
 <script>
@@ -684,9 +728,11 @@ html, body { width:100%; height:100%; overflow:hidden; background:var(--ink); co
 const API = window.location.origin + '/api';
 const S = {
   stream:null, capturing:false, captureIv:null,
-  frameCount:0, frames:[], sessionId:null, scans:[],
-  treat:null, tooth:null, toothData:{}, tab:'scan'
+  frameCount:0, sent:0, sessionId:null, scans:[],
+  treat:null, tooth:null, toothData:{}, tab:'scan',
+  patient:'', upQueue:Promise.resolve(), pending:0, viewMode:'mesh', result:null
 };
+const MAX_FRAMES=180, MIN_FRAMES=8, CAPTURE_MS=450;
 
 const TOOTH_NAMES = {
   11:'IC Sup Dir',12:'IL Sup Dir',13:'Can Sup Dir',14:'PM1 Sup Dir',15:'PM2 Sup Dir',16:'M1 Sup Dir',17:'M2 Sup Dir',18:'Siso Sup Dir',
@@ -701,493 +747,11 @@ const TREAT_INFO = {
   implante:{title:'Implante Dentário',color:'#4a8fff', desc:'Substitui o dente perdido com titânio osseointegrado. Resultado idêntico ao dente natural.', steps:['Avaliação tomográfica','Instalação cirúrgica','Osseointegração (3–6 meses)','Instalação do pilar','Coroa sobre implante']},
   canal:   {title:'Tratamento de Canal',color:'#a855f7',desc:'Remove polpa infectada, limpa e sela os canais radiculares preservando o dente.', steps:['Anestesia e isolamento','Abertura coronária','Instrumentação dos canais','Obturação','Restauração coronal']},
   resina:  {title:'Restauração com Resina',color:'#00d4b4',desc:'Restauração estética direta para cavidades pequenas a médias, aplicada em camadas.', steps:['Anestesia (se necessário)','Remoção do tecido','Condicionamento ácido','Resina em camadas','Fotopolimerização e polimento']},
-  limpeza: {title:'Profilaxia e Limpeza',color:'#f0c040',desc:'Remoção de placa, tártaro e manchas. Essencial para saúde periodontal.', steps:['Avaliação periodontal','Ultrassom','Curetagem subgengival','Polimento','Orientação de higiene']}
+  limpeza: {title:'Profilaxia e Limpeza',color:'#f0c040',desc:'Remoção de placa, tártaro e manchas. Essencial para saúde periodontal.', steps:['Avaliação periodontal','Ultrassom','Curetagem subgengival','Polimento','Orientação de higiene']},
+  extraido:{title:'Dente Ausente',color:'#888888',desc:'Dente extraído ou ausente. Pode ser reabilitado com implante, ponte ou prótese.', steps:['Avaliação do espaço','Exame de imagem','Planejamento da reabilitação','Escolha: implante, ponte ou prótese','Acompanhamento']}
 };
 
-// ════════════════════════════════════════
-// THREE.JS
-// ════════════════════════════════════════
-let scene, cam3d, rend3d, cloudObj;
-let cDist=3, cTheta=.3, cPhi=1.1;
-let drag=false, pm={x:0,y:0}, prevT=null;
-
-function initThree(){
-  const canvas = document.getElementById('c3d');
-  const cont   = document.getElementById('centerView');
-  scene = new THREE.Scene();
-  const W=cont.clientWidth, H=cont.clientHeight;
-  cam3d = new THREE.PerspectiveCamera(45, W/H, .01, 200);
-  updateCam3d();
-  rend3d = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
-  rend3d.setSize(W,H);
-  rend3d.setPixelRatio(Math.min(devicePixelRatio,2));
-  scene.add(new THREE.AmbientLight(0xffffff,.7));
-  const d=new THREE.DirectionalLight(0xffffff,.6); d.position.set(3,4,3); scene.add(d);
-  const grid=new THREE.GridHelper(6,30,0x1a2035,0x1a2035); grid.position.y=-1.3; scene.add(grid);
-
-  // Events
-  canvas.addEventListener('mousedown', e=>{drag=true;pm={x:e.clientX,y:e.clientY}});
-  window.addEventListener('mouseup', ()=>drag=false);
-  window.addEventListener('mousemove', e=>{
-    if(!drag)return;
-    cTheta -= (e.clientX-pm.x)*.008;
-    cPhi = Math.max(.15,Math.min(Math.PI-.15,cPhi+(e.clientY-pm.y)*.008));
-    pm={x:e.clientX,y:e.clientY}; updateCam3d();
-  });
-  canvas.addEventListener('wheel', e=>{cDist=Math.max(.5,Math.min(12,cDist+e.deltaY*.005));updateCam3d()});
-  canvas.addEventListener('touchstart',e=>{prevT=e.touches[0];e.preventDefault()},{passive:false});
-  canvas.addEventListener('touchmove',e=>{
-    if(!prevT||e.touches.length!==1)return;
-    const t=e.touches[0];
-    cTheta-=(t.clientX-prevT.clientX)*.01;
-    cPhi=Math.max(.15,Math.min(Math.PI-.15,cPhi+(t.clientY-prevT.clientY)*.01));
-    prevT=t; updateCam3d(); e.preventDefault();
-  },{passive:false});
-  canvas.addEventListener('touchend',()=>prevT=null);
-  window.addEventListener('resize',()=>{
-    const W=cont.clientWidth,H=cont.clientHeight;
-    cam3d.aspect=W/H; cam3d.updateProjectionMatrix(); rend3d.setSize(W,H);
-  });
-  (function loop(){requestAnimationFrame(loop); if(cloudObj&&cloudObj._spin)cloudObj.rotation.y+=.003; rend3d.render(scene,cam3d)})();
-}
-
-function updateCam3d(){
-  cam3d.position.set(
-    cDist*Math.sin(cPhi)*Math.sin(cTheta),
-    cDist*Math.cos(cPhi),
-    cDist*Math.sin(cPhi)*Math.cos(cTheta)
-  );
-  cam3d.lookAt(0,0,0);
-}
-function zoom3d(f){cDist=Math.max(.5,Math.min(12,cDist*f));updateCam3d()}
-function reset3dCam(){cDist=3;cTheta=.3;cPhi=1.1;updateCam3d()}
-
-function loadCloud(pts, colors, name, meta){
-  if(cloudObj){scene.remove(cloudObj);cloudObj.geometry.dispose();}
-  document.getElementById('ph').style.display='none';
-  const g=new THREE.BufferGeometry();
-  const pos=new Float32Array(pts.length*3), col=new Float32Array(pts.length*3);
-  pts.forEach((p,i)=>{
-    pos[i*3]=p[0];pos[i*3+1]=p[1];pos[i*3+2]=p[2];
-    const c=colors[i]||[.85,.85,.85];
-    col[i*3]=c[0];col[i*3+1]=c[1];col[i*3+2]=c[2];
-  });
-  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  g.setAttribute('color',new THREE.BufferAttribute(col,3));
-  cloudObj=new THREE.Points(g,new THREE.PointsMaterial({size:.018,vertexColors:true,sizeAttenuation:true}));
-  cloudObj._spin=true;
-  scene.add(cloudObj);
-  document.getElementById('vinfo').classList.add('show');
-  document.getElementById('vinfoTitle').textContent=name;
-  document.getElementById('vinfoSub').textContent=meta;
-  document.getElementById('vaPresent').classList.add('show');
-  document.getElementById('vaStl').classList.add('show');
-  document.getElementById('vaNew').classList.add('show');
-  reset3dCam();
-}
-
-function loadDemo(){
-  const pts=[],cols=[];
-  for(let t=0;t<Math.PI;t+=.06){
-    const r=1.1+Math.random()*.08;
-    const x=r*Math.cos(t), z=r*Math.sin(t)*.65;
-    for(let y=-.28;y<.38;y+=.045){
-      pts.push([x+(Math.random()-.5)*.04,y+(Math.random()-.5)*.02,z+(Math.random()-.5)*.04]);
-      const c=.72+Math.random()*.22; cols.push([c,c*.94,c*.87]);
-    }
-  }
-  loadCloud(pts,cols,'Arcada Demo','Demo · '+pts.length+' pontos');
-}
-
-// ════════════════════════════════════════
-// SOCKET.IO
-// ════════════════════════════════════════
-let socket=null;
-function initSocket(){
-  try{
-    socket=io(window.location.origin);
-    socket.on('progress',d=>{
-      if(d.session_id!==S.sessionId)return;
-      document.getElementById('progFill').style.width=d.progress+'%';
-      document.getElementById('progMsg').textContent=d.msg;
-    });
-    socket.on('scan_done',d=>{
-      if(d.session_id!==S.sessionId)return;
-      fetchResult(d.session_id);
-    });
-    socket.on('scan_error',d=>{
-      if(d.session_id!==S.sessionId)return;
-      toast('Erro: '+d.error,'err');
-      document.getElementById('btnProcess').disabled=false;
-    });
-  }catch(e){console.log('Socket.IO indisponível')}
-}
-
-// ════════════════════════════════════════
-// SOM & FEEDBACK
-// ════════════════════════════════════════
-let audioCtx=null;
-function playClick(){
-  try{
-    if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
-    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
-    o.connect(g); g.connect(audioCtx.destination);
-    o.frequency.value=880;
-    g.gain.setValueAtTime(.12,audioCtx.currentTime);
-    g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+.06);
-    o.start(); o.stop(audioCtx.currentTime+.06);
-  }catch(e){}
-}
-
-function flashFrame(){
-  const el=document.getElementById('camCounter');
-  el.textContent=S.frameCount;
-  el.classList.add('flash');
-  setTimeout(()=>el.classList.remove('flash'),80);
-}
-
-// ════════════════════════════════════════
-// CÂMERA
-// ════════════════════════════════════════
-async function initCamera(){
-  if(!navigator.mediaDevices?.getUserMedia){toast('Câmera não suportada','err');return}
-  try{ S.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false}) }
-  catch(e1){
-    try{ S.stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false}) }
-    catch(e2){ toast('Erro câmera: '+e2.message,'err'); return }
-  }
-  document.getElementById('camVideo').srcObject=S.stream;
-  document.getElementById('btnCam').style.display='none';
-  document.getElementById('btnStopCam').style.display='';
-  document.getElementById('btnCapture').disabled=false;
-  toast('Câmera ativada!','ok');
-}
-
-function stopCamera(){
-  S.stream?.getTracks().forEach(t=>t.stop()); S.stream=null;
-  if(S.capturing)stopCapture();
-  document.getElementById('camVideo').srcObject=null;
-  document.getElementById('btnStopCam').style.display='none';
-  document.getElementById('btnCam').style.display='';
-  document.getElementById('btnCapture').disabled=true;
-  toast('Câmera desligada','info');
-}
-
-// ════════════════════════════════════════
-// CAPTURA
-// ════════════════════════════════════════
-async function startCapture(){
-  const name=prompt('Nome do scan:','Scan_'+Date.now())||'Scan_'+Date.now();
-  // Cria sessão no backend
-  try{
-    const r=await fetch(API+'/session/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
-    if(!r.ok) throw new Error('Status '+r.status);
-    const d=await r.json();
-    S.sessionId=d.session_id;
-  }catch(e){toast('Erro ao conectar backend: '+e.message,'err');return}
-
-  S.frameCount=0; S.frames=[]; S._scanName=name; S.capturing=true;
-  document.getElementById('camRec').classList.add('on');
-  document.getElementById('btnCapture').style.display='none';
-  document.getElementById('btnStop').style.display=''; document.getElementById('btnStop').disabled=false;
-  document.getElementById('btnProcess').disabled=true;
-  S.captureIv=setInterval(captureFrame,350);
-  toast('Captura iniciada! Gire o modelo devagar.','ok');
-}
-
-function stopCapture(){
-  clearInterval(S.captureIv); S.capturing=false;
-  document.getElementById('camRec').classList.remove('on');
-  document.getElementById('btnStop').style.display='none';
-  document.getElementById('btnCapture').style.display=''; document.getElementById('btnCapture').disabled=true;
-  document.getElementById('btnProcess').disabled=S.frameCount<6;
-  toast(S.frameCount>=6?`✅ ${S.frameCount} frames capturados`:`Mínimo 6 frames (você tem ${S.frameCount})`,S.frameCount>=6?'ok':'err');
-}
-
-function captureFrame(){
-  const v=document.getElementById('camVideo');
-  if(!v.videoWidth)return;
-  const c=document.createElement('canvas');
-  c.width=v.videoWidth; c.height=v.videoHeight;
-  c.getContext('2d').drawImage(v,0,0);
-  S.frameCount++;
-  S.frames.push(c.toDataURL('image/jpeg',.88));
-  playClick(); flashFrame();
-  document.getElementById('camFps').textContent=S.frameCount+' frames';
-}
-
-// ════════════════════════════════════════
-// PROCESSAMENTO
-// ════════════════════════════════════════
-async function processFrames(){
-  if(!S.sessionId){toast('Inicie uma captura primeiro','err');return}
-  document.getElementById('btnProcess').disabled=true;
-  document.getElementById('prog').classList.add('show');
-  toast('Enviando frames para o servidor...','info');
-
-  // Envia frames
-  for(let i=0;i<S.frames.length;i++){
-    document.getElementById('progFill').style.width=(i/S.frames.length*40)+'%';
-    document.getElementById('progMsg').textContent=`Enviando frame ${i+1} de ${S.frames.length}...`;
-    try{
-      await fetch(API+'/frame/upload',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({session_id:S.sessionId,frame:S.frames[i]})
-      });
-    }catch(e){toast('Erro no envio: '+e.message,'err');return}
-  }
-
-  // Inicia processamento
-  document.getElementById('progFill').style.width='45%';
-  document.getElementById('progMsg').textContent='Iniciando COLMAP...';
-  try{
-    await fetch(API+'/scan/process',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:S.sessionId})});
-  }catch(e){toast('Erro: '+e.message,'err');return}
-
-  // Polling fallback se Socket.IO não disponível
-  if(!socket||!socket.connected) pollStatus(S.sessionId);
-}
-
-function pollStatus(sid){
-  const iv=setInterval(async()=>{
-    try{
-      const r=await fetch(API+'/scan/status/'+sid);
-      const d=await r.json();
-      document.getElementById('progFill').style.width=d.progress+'%';
-      document.getElementById('progMsg').textContent=d.msg;
-      if(d.status==='done'){clearInterval(iv);fetchResult(sid)}
-      else if(d.status==='error'){clearInterval(iv);toast('Erro: '+d.error,'err');document.getElementById('btnProcess').disabled=false}
-    }catch(e){clearInterval(iv);toast('Backend desconectado','err')}
-  },1000);
-}
-
-async function fetchResult(sid){
-  try{
-    const r=await fetch(API+'/scan/result/'+sid);
-    const d=await r.json();
-    loadCloud(d.points,d.colors,d.session_name,`${d.point_count.toLocaleString()} pontos · ${d.frame_count} frames · COLMAP`);
-    S.scans.unshift({id:sid,name:d.session_name,pts:d.point_count,date:new Date().toLocaleDateString('pt-BR')});
-    renderScanList();
-    S.frames=[]; S.frameCount=0;
-    toast(`✅ ${d.point_count.toLocaleString()} pontos 3D gerados!`,'ok');
-  }catch(e){toast('Erro ao carregar resultado','err')}
-}
-
-function renderScanList(){
-  const el=document.getElementById('scanList');
-  if(!S.scans.length){el.innerHTML='<div style="font-size:.73rem;color:var(--muted);text-align:center;padding:14px 0">Nenhum scan ainda.</div>';return}
-  el.innerHTML=S.scans.map(s=>`
-    <div class="scan-item ${s.id===S.sessionId?'active':''}">
-      <div class="si-name">${s.name}</div>
-      <div class="si-meta">${s.date}</div>
-      <div class="si-pts">${s.pts.toLocaleString()} pts</div>
-    </div>`).join('');
-}
-
-function resetScan(){
-  S.frameCount=0; S.frames=[];
-  document.getElementById('camFps').textContent='0 frames';
-  document.getElementById('qualFill').style.width='0';
-  document.getElementById('qualVal').textContent='—';
-  document.getElementById('btnCapture').disabled=!S.stream;
-  document.getElementById('btnProcess').disabled=true;
-  document.getElementById('prog').classList.remove('show');
-  toast('Pronto para novo scan','info');
-}
-
-function downloadSTL(){
-  if(!S.sessionId){toast('Nenhum scan selecionado','err');return}
-  window.location.href=API+'/scan/stl/'+S.sessionId;
-}
-
-// ════════════════════════════════════════
-// TRATAMENTO
-// ════════════════════════════════════════
-function selTreat(type,el){
-  S.treat=type;
-  document.querySelectorAll('.tc').forEach(c=>c.classList.remove('active'));
-  el.classList.add('active');
-  if(S.tooth){
-    if(!S.toothData[S.tooth])S.toothData[S.tooth]={treat:type,faces:[],notes:''};
-    S.toothData[S.tooth].treat=type;
-    ODO.setTreat(S.tooth,type); ODO.draw();
-  }
-  updatePresInfo();
-  toast(TREAT_INFO[type].title+' selecionado','info');
-}
-
-function toggleFace(btn){
-  if(!S.tooth){toast('Selecione um dente primeiro','err');return}
-  const face=btn.dataset.face;
-  if(!S.toothData[S.tooth])S.toothData[S.tooth]={treat:S.treat,faces:[],notes:''};
-  const data=S.toothData[S.tooth];
-  const idx=data.faces.indexOf(face);
-  if(idx>=0)data.faces.splice(idx,1); else data.faces.push(face);
-  data.treat=S.treat||data.treat;
-  btn.classList.toggle('active');
-  if(S.treat)btn.classList.toggle('affected',data.faces.includes(face));
-  ODO.setTreat(S.tooth,data.treat); ODO.draw();
-}
-
-function selectTooth(num){
-  S.tooth=num;
-  const data=S.toothData[num]||{treat:null,faces:[],notes:''};
-  document.getElementById('tcNum').textContent='Dente '+num;
-  document.getElementById('tcName').textContent=TOOTH_NAMES[num]||'Dente '+num;
-  document.getElementById('tcStatus').textContent=data.treat?'⚠️ Atenção':'OK';
-  document.getElementById('tcStatus').className='tc-status '+(data.treat?'warn':'ok');
-  document.querySelectorAll('.face').forEach(b=>{
-    b.classList.remove('active','affected');
-    if(data.faces?.includes(b.dataset.face))b.classList.add(data.treat?'affected':'active');
-  });
-  document.getElementById('toothNotes').value=data.notes||'';
-  if(window.innerWidth<=768)mobileNav('treat');
-  toast('Dente '+num+' — '+(TOOTH_NAMES[num]||num),'info');
-}
-
-// ════════════════════════════════════════
-// TABS & MOBILE NAV
-// ════════════════════════════════════════
-function switchTab(tab,el){
-  S.tab=tab;
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  el.classList.add('active');
-  const odo=document.getElementById('odoOverlay');
-  odo.classList.toggle('show',tab==='odonto');
-  if(tab==='historico')toast('Histórico em breve!','info');
-  if(tab==='odonto')setTimeout(()=>{if(ODO?.canvas){ODO.resize();ODO.buildTeeth();ODO.draw()}},80);
-}
-
-function mobileNav(panel){
-  document.querySelectorAll('.mnav').forEach(b=>b.classList.remove('active'));
-  document.getElementById('mnav-'+panel)?.classList.add('active');
-  const right=document.getElementById('panelRight');
-  const odo=document.getElementById('odoOverlay');
-  right.classList.remove('open');
-  odo.classList.remove('show');
-  if(panel==='treat') right.classList.add('open');
-  else if(panel==='odo'){
-    odo.classList.add('show');
-    setTimeout(()=>{if(ODO?.canvas){ODO.resize();ODO.buildTeeth();ODO.draw()}},100);
-  }
-}
-
-// ════════════════════════════════════════
-// PRESENTATION
-// ════════════════════════════════════════
-let presR=null, presScene=null, presC=null, presObj=null;
-
-function enterPres(){
-  document.getElementById('presMode').classList.add('show');
-  document.getElementById('presPatient').textContent='Paciente: '+document.getElementById('pName').textContent;
-  updatePresInfo();
-  initPresThree();
-}
-function exitPres(){
-  document.getElementById('presMode').classList.remove('show');
-  presR?.dispose();
-}
-function updatePresInfo(){
-  const t=TREAT_INFO[S.treat];
-  if(!t)return;
-  const el=document.getElementById('presTitle');
-  el.textContent=t.title; el.style.color=t.color;
-  document.getElementById('presDesc').textContent=t.desc;
-  document.getElementById('presSteps').innerHTML=t.steps.map((s,i)=>`
-    <div class="pstep"><div class="pstep-num">${i+1}</div><div class="pstep-text">${s}</div></div>`).join('');
-}
-function initPresThree(){
-  const canvas=document.getElementById('presCanvas');
-  const cont=canvas.parentElement;
-  presScene=new THREE.Scene();
-  const W=cont.clientWidth,H=cont.clientHeight;
-  presC=new THREE.PerspectiveCamera(45,W/H,.01,200);
-  presC.position.set(0,0,3); presC.lookAt(0,0,0);
-  presR?.dispose();
-  presR=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
-  presR.setSize(W,H);
-  presScene.add(new THREE.AmbientLight(0xffffff,.8));
-  const d=new THREE.DirectionalLight(0xffffff,.5); d.position.set(2,3,2); presScene.add(d);
-
-  if(cloudObj){ presObj=cloudObj.clone(); presScene.add(presObj); }
-  else loadDemoInPres();
-
-  let pd=false,pp={x:0,y:0},pDist=3,pTh=.3,pPh=1.1;
-  function pCam(){presC.position.set(pDist*Math.sin(pPh)*Math.sin(pTh),pDist*Math.cos(pPh),pDist*Math.sin(pPh)*Math.cos(pTh));presC.lookAt(0,0,0)}
-  canvas.addEventListener('mousedown',e=>{pd=true;pp={x:e.clientX,y:e.clientY}});
-  window.addEventListener('mouseup',()=>pd=false);
-  window.addEventListener('mousemove',e=>{if(!pd)return;pTh-=(e.clientX-pp.x)*.008;pPh=Math.max(.15,Math.min(Math.PI-.15,pPh+(e.clientY-pp.y)*.008));pp={x:e.clientX,y:e.clientY};pCam()});
-
-  let pt0=null;
-  canvas.addEventListener('touchstart',e=>{pt0=e.touches[0]},{passive:true});
-  canvas.addEventListener('touchmove',e=>{if(!pt0)return;const t=e.touches[0];pTh-=(t.clientX-pt0.clientX)*.012;pPh=Math.max(.15,Math.min(Math.PI-.15,pPh+(t.clientY-pt0.clientY)*.012));pt0=t;pCam()},{passive:true});
-
-  (function loop(){if(!document.getElementById('presMode').classList.contains('show'))return;requestAnimationFrame(loop);if(presObj)presObj.rotation.y+=.006;presR.render(presScene,presC)})();
-}
-
-function loadDemoInPres(){
-  const pts=[],cols=[];
-  for(let t=0;t<Math.PI;t+=.08){
-    const r=1.1,x=r*Math.cos(t),z=r*Math.sin(t)*.6;
-    for(let y=-.25;y<.35;y+=.05){
-      pts.push([x+(Math.random()-.5)*.04,y,z+(Math.random()-.5)*.04]);
-      const c=.75+Math.random()*.2; cols.push([c,c*.93,c*.85]);
-    }
-  }
-  const g=new THREE.BufferGeometry();
-  const pos=new Float32Array(pts.length*3),col=new Float32Array(pts.length*3);
-  pts.forEach((p,i)=>{pos[i*3]=p[0];pos[i*3+1]=p[1];pos[i*3+2]=p[2];col[i*3]=cols[i][0];col[i*3+1]=cols[i][1];col[i*3+2]=cols[i][2]});
-  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  g.setAttribute('color',new THREE.BufferAttribute(col,3));
-  presObj=new THREE.Points(g,new THREE.PointsMaterial({size:.02,vertexColors:true}));
-  presScene.add(presObj);
-}
-
-// ════════════════════════════════════════
-// MISC
-// ════════════════════════════════════════
-function editPatient(){
-  const name=prompt('Nome do paciente:',document.getElementById('pName').textContent);
-  if(!name)return;
-  const ini=name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-  document.getElementById('pName').textContent=name;
-  document.getElementById('rpName').textContent=name;
-  document.getElementById('pAv').textContent=ini;
-  toast('Paciente atualizado','ok');
-}
-
-let toastTm;
-function toast(msg,type='info'){
-  const el=document.getElementById('toast');
-  el.className='toast '+type; el.textContent=msg; el.classList.add('show');
-  clearTimeout(toastTm); toastTm=setTimeout(()=>el.classList.remove('show'),3200);
-}
-
-// ════════════════════════════════════════
-// INIT
-// ════════════════════════════════════════
-window.addEventListener('load',()=>{
-  initThree();
-  ODO.init('odoCanvas');
-  ODO.onSelect=num=>selectTooth(num);
-  initSocket();
-  setTimeout(()=>{
-    loadDemo();
-    S.scans.unshift({id:'DEMO',name:'Demo — Arcada Completa',pts:1240,date:new Date().toLocaleDateString('pt-BR')});
-    renderScanList();
-  },1000);
-  // Mobile: abre câmera por padrão
-  if(window.innerWidth<=768){
-    document.getElementById('mnav-cam').classList.add('active');
-  }
-});
-window.addEventListener('resize',()=>{
-  const cont=document.getElementById('centerView');
-  const W=cont.clientWidth,H=cont.clientHeight;
-  if(!W||!H)return;
-  cam3d.aspect=W/H; cam3d.updateProjectionMatrix(); rend3d.setSize(W,H);
-});
 </script>
+<script src="/static/js/app.js"></script>
 </body>
 </html>

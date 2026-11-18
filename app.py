@@ -1,338 +1,342 @@
-from flask import Flask, request, jsonify, send_file, render_template
-from flask_cors import CORS
-from flask_socketio import SocketIO, emit
-import os, uuid, json, base64, subprocess, shutil, threading, time
+"""
+OdontoScan 3D — servidor
+Flask + Socket.IO (modo threading) · COLMAP · SQLite
+"""
+import os, re, json, time, uuid, shutil, sqlite3, threading
+
 import numpy as np
 import cv2
-from PIL import Image
-import io
-import trimesh
-from scipy.spatial import ConvexHull
-from sklearn.neighbors import NearestNeighbors
+from flask import Flask, request, jsonify, send_file, render_template, abort
+from flask_socketio import SocketIO, join_room
+
+import pipeline
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'odontoscan2024')
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-CORS(app, resources={r"/*": {"origins": "*"}})
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or uuid.uuid4().hex
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024   # por requisição (1 frame)
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
-# ── CONFIGURAÇÕES ──────────────────────────────────────────────────────────────
+# ── CONFIG ─────────────────────────────────────────────────────────────────────
 IS_RAILWAY = os.environ.get('RAILWAY_ENVIRONMENT') is not None
-DATA_DIR   = '/data' if IS_RAILWAY else os.path.join(os.path.expanduser('~'), 'Desktop', 'odontoscan_work')
+DATA_DIR = os.environ.get('DATA_DIR') or ('/data' if IS_RAILWAY else
+                                          os.path.join(os.path.expanduser('~'), 'Desktop', 'odontoscan_work'))
 os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH    = os.path.join(DATA_DIR, 'odontoscan.db')
+MAX_SIDE   = int(os.environ.get('MAX_IMAGE_SIDE', 1600))
+MAX_FRAMES = int(os.environ.get('MAX_FRAMES', 180))
+MIN_FRAMES = 8
+SID_RE     = re.compile(r'^[A-F0-9]{10}$')
 
-# COLMAP path
-if IS_RAILWAY:
-    COLMAP = 'colmap'  # Instalado via apt no Railway
-else:
-    COLMAP = r'C:\Users\Gabriela\Desktop\bin\colmap.exe'
+_db_lock    = threading.Lock()
+_frame_lock = threading.Lock()
+_job_sem    = threading.Semaphore(int(os.environ.get('MAX_JOBS', 1)))   # 1 reconstrução por vez
 
-sessions = {}
+
+# ── BANCO ──────────────────────────────────────────────────────────────────────
+def db():
+    c = sqlite3.connect(DB_PATH, timeout=30)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def db_init():
+    with _db_lock, db() as c:
+        c.executescript('''
+        CREATE TABLE IF NOT EXISTS scans(
+            id TEXT PRIMARY KEY, name TEXT, patient TEXT, status TEXT, progress INTEGER,
+            msg TEXT, error TEXT, created REAL, frames INTEGER DEFAULT 0, points INTEGER DEFAULT 0,
+            marker_mm REAL, units TEXT, has_mesh INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS odontograma(
+            patient TEXT PRIMARY KEY, data TEXT, updated REAL);
+        ''')
+        # watchdog: o que estava processando quando o servidor caiu volta como erro
+        c.execute("UPDATE scans SET status='error', progress=0, "
+                  "error='Interrompido (servidor reiniciou). Clique em Gerar Modelo 3D de novo.', "
+                  "msg='Interrompido' WHERE status IN ('processing','queued')")
+
+
+def scan_get(sid):
+    with _db_lock, db() as c:
+        r = c.execute('SELECT * FROM scans WHERE id=?', (sid,)).fetchone()
+    return dict(r) if r else None
+
+
+def scan_set(sid, **kw):
+    if not kw:
+        return
+    cols = ', '.join(f'{k}=?' for k in kw)
+    with _db_lock, db() as c:
+        c.execute(f'UPDATE scans SET {cols} WHERE id=?', (*kw.values(), sid))
+
+
+def valid_sid(sid):
+    if not sid or not SID_RE.match(sid):
+        abort(400, 'Sessão inválida')
+    return sid
+
+
+def sdir(sid):
+    return os.path.join(DATA_DIR, 'scans', sid)
+
+
+db_init()
+
 
 # ── FRONTEND ───────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/static/<path:filename>')
-def static_files(filename):
-    return send_file(f'static/{filename}')
 
-# ── PING ───────────────────────────────────────────────────────────────────────
 @app.route('/api/ping')
 def ping():
-    return jsonify({'status': 'ok', 'railway': IS_RAILWAY, 'colmap': COLMAP})
+    return jsonify({'status': 'ok', 'railway': IS_RAILWAY})
 
-# ── NOVA SESSÃO ────────────────────────────────────────────────────────────────
+
+@app.route('/api/health')
+def health():
+    return jsonify({'status': 'ok', 'colmap': pipeline.colmap_info(), 'data_dir': DATA_DIR,
+                    'threads': pipeline.MAX_THREADS})
+
+
+@app.route('/api/marker.png')
+def marker():
+    try:
+        mm = float(request.args.get('mm', 20))
+    except ValueError:
+        mm = 20.0
+    mm = min(max(mm, 5), 100)
+    return send_file(pipeline.marker_png(mm), mimetype='image/png',
+                     download_name=f'marcador_odontoscan_{mm:g}mm.png')
+
+
+# ── SESSÃO ─────────────────────────────────────────────────────────────────────
 @app.route('/api/session/new', methods=['POST'])
 def new_session():
-    data = request.json or {}
-    sid  = str(uuid.uuid4())[:8].upper()
-    sessions[sid] = {
-        'name':     data.get('name', f'Scan_{sid}'),
-        'frames':   [],
-        'status':   'capturing',
-        'progress': 0,
-        'msg':      'Aguardando frames...',
-        'created':  time.time(),
-        'points':   0
-    }
-    os.makedirs(os.path.join(DATA_DIR, sid, 'images'), exist_ok=True)
+    data = request.get_json(silent=True) or {}
+    sid = uuid.uuid4().hex[:10].upper()
+    try:
+        marker_mm = float(data.get('marker_mm') or 0) or None
+    except (TypeError, ValueError):
+        marker_mm = None
+    name = (str(data.get('name') or '').strip() or f'Scan {time.strftime("%d/%m %H:%M")}')[:80]
+    patient = str(data.get('patient') or '').strip()[:80]
+    os.makedirs(os.path.join(sdir(sid), 'images'), exist_ok=True)
+    with _db_lock, db() as c:
+        c.execute('INSERT INTO scans(id,name,patient,status,progress,msg,created,marker_mm) '
+                  'VALUES(?,?,?,?,?,?,?,?)',
+                  (sid, name, patient, 'capturing', 0, 'Aguardando frames...', time.time(), marker_mm))
     return jsonify({'session_id': sid, 'status': 'ok'})
 
-# ── UPLOAD DE FRAME ─────────────────────────────────────────────────────────────
+
+# ── UPLOAD DE FRAME ────────────────────────────────────────────────────────────
+def _decode_frame():
+    f = request.files.get('frame')
+    if f:
+        buf = f.read()
+    else:
+        data = request.get_json(silent=True) or {}
+        b64 = data.get('frame') or ''
+        if ',' in b64:
+            b64 = b64.split(',', 1)[1]
+        import base64
+        try:
+            buf = base64.b64decode(b64)
+        except Exception:
+            return None
+    if not buf:
+        return None
+    return cv2.imdecode(np.frombuffer(buf, np.uint8), cv2.IMREAD_COLOR)
+
+
 @app.route('/api/frame/upload', methods=['POST'])
 def upload_frame():
-    data = request.json
-    sid  = data.get('session_id')
-    if not sid or sid not in sessions:
-        return jsonify({'error': 'Sessão inválida'}), 400
+    sid = valid_sid(request.form.get('session_id') or (request.get_json(silent=True) or {}).get('session_id'))
+    s = scan_get(sid)
+    if not s:
+        return jsonify({'error': 'Sessão não encontrada'}), 404
+    if s['status'] in ('processing', 'queued'):
+        return jsonify({'error': 'Scan já está sendo processado'}), 409
 
-    img_b64   = data['frame'].split(',')[1]
-    img_bytes = base64.b64decode(img_b64)
-    arr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-
+    img = _decode_frame()
     if img is None:
         return jsonify({'error': 'Frame inválido'}), 400
 
-    idx      = len(sessions[sid]['frames'])
-    img_path = os.path.join(DATA_DIR, sid, 'images', f'{idx:04d}.jpg')
-    cv2.imwrite(img_path, img, [cv2.IMWRITE_JPEG_QUALITY, 92])
-    sessions[sid]['frames'].append(img_path)
+    h, w = img.shape[:2]
+    if max(h, w) > MAX_SIDE:
+        k = MAX_SIDE / max(h, w)
+        img = cv2.resize(img, (int(w * k), int(h * k)), interpolation=cv2.INTER_AREA)
 
-    # Keypoints para feedback
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    orb  = cv2.ORB_create(500)
-    kp, _ = orb.detectAndCompute(gray, None)
+    sharp = float(cv2.Laplacian(cv2.resize(gray, (640, int(640 * gray.shape[0] / gray.shape[1]))),
+                                cv2.CV_64F).var())
+    kp = cv2.ORB_create(800).detect(gray, None)
+    nkp = len(kp)
+    quality = int(min(100, nkp / 6) * 0.6 + min(100, sharp / 2) * 0.4)
 
-    # Notifica via WebSocket
-    socketio.emit('frame_received', {
-        'session_id': sid,
-        'frame_index': idx,
-        'total': idx + 1,
-        'keypoints': len(kp)
-    })
+    if nkp < 40:
+        return jsonify({'accepted': False, 'reason': 'sem textura/escuro', 'keypoints': nkp,
+                        'sharpness': round(sharp), 'quality': quality, 'total_frames': s['frames']})
 
-    return jsonify({'frame_index': idx, 'keypoints': len(kp), 'total_frames': idx + 1})
+    img_dir = os.path.join(sdir(sid), 'images')
+    with _frame_lock:
+        idx = len([n for n in os.listdir(img_dir) if n.endswith('.jpg')])
+        if idx >= MAX_FRAMES:
+            return jsonify({'accepted': False, 'reason': f'limite de {MAX_FRAMES} frames',
+                            'total_frames': idx, 'quality': quality}), 200
+        cv2.imwrite(os.path.join(img_dir, f'{idx:04d}.jpg'), img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        scan_set(sid, frames=idx + 1)
+
+    return jsonify({'accepted': True, 'frame_index': idx, 'total_frames': idx + 1,
+                    'keypoints': nkp, 'sharpness': round(sharp), 'quality': quality})
+
 
 # ── PROCESSAR ──────────────────────────────────────────────────────────────────
 @app.route('/api/scan/process', methods=['POST'])
 def process_scan():
-    data = request.json
-    sid  = data.get('session_id')
-    if not sid or sid not in sessions:
-        return jsonify({'error': 'Sessão inválida'}), 400
-
-    sess = sessions[sid]
-    if len(sess['frames']) < 6:
-        return jsonify({'error': f'Mínimo 6 frames. Você tem {len(sess["frames"])}.'}), 400
-
-    sess['status'] = 'processing'
-    t = threading.Thread(target=_run_reconstruction, args=(sid,))
-    t.daemon = True
-    t.start()
-    return jsonify({'status': 'processing'})
-
-def _update(sid, progress, msg):
-    """Atualiza progresso via WebSocket e sessão"""
-    sessions[sid]['progress'] = progress
-    sessions[sid]['msg']      = msg
-    socketio.emit('progress', {'session_id': sid, 'progress': progress, 'msg': msg})
-
-def _run_reconstruction(sid):
-    sess   = sessions[sid]
-    base   = os.path.join(DATA_DIR, sid)
-    img_dir   = os.path.join(base, 'images')
-    db_path   = os.path.join(base, 'database.db')
-    sparse_dir = os.path.join(base, 'sparse')
-    os.makedirs(sparse_dir, exist_ok=True)
-
-    try:
-        # ── PASSO 1: Feature extraction ──
-        _update(sid, 10, 'Extraindo pontos de interesse...')
-        cmd = f'"{COLMAP}" feature_extractor --database_path "{db_path}" --image_path "{img_dir}" --ImageReader.single_camera 1 --FeatureExtraction.use_gpu 0'
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
-        if r.returncode != 0:
-            raise Exception('Feature extraction falhou: ' + r.stderr[-400:])
-
-        # ── PASSO 2: Matching ──
-        _update(sid, 30, 'Calculando correspondências entre frames...')
-        cmd = f'"{COLMAP}" exhaustive_matcher --database_path "{db_path}" --FeatureMatching.use_gpu 0'
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise Exception('Matching falhou: ' + r.stderr[-400:])
-
-        # ── PASSO 3: Reconstrução sparse ──
-        _update(sid, 50, 'Reconstruindo geometria 3D...')
-        cmd = f'"{COLMAP}" mapper --database_path "{db_path}" --image_path "{img_dir}" --output_path "{sparse_dir}"'
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=900)
-        if r.returncode != 0:
-            raise Exception('Mapper falhou: ' + r.stderr[-400:])
-
-        # Encontra modelo gerado
-        model_dir = None
-        for d in sorted(os.listdir(sparse_dir)):
-            candidate = os.path.join(sparse_dir, d)
-            if os.path.isdir(candidate):
-                model_dir = candidate
-                break
-        if not model_dir:
-            raise Exception('Nenhum modelo gerado. Tente com mais frames e melhor iluminação.')
-
-        # ── PASSO 4: Exporta para TXT ──
-        _update(sid, 65, 'Exportando modelo...')
-        txt_dir = os.path.join(base, 'sparse_txt')
-        os.makedirs(txt_dir, exist_ok=True)
-        cmd = f'"{COLMAP}" model_converter --input_path "{model_dir}" --output_path "{txt_dir}" --output_type TXT'
-        subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-
-        # ── PASSO 5: Lê pontos 3D ──
-        _update(sid, 75, 'Lendo pontos 3D...')
-        pts3d_file = os.path.join(txt_dir, 'points3D.txt')
-        points, colors = [], []
-
-        if os.path.exists(pts3d_file):
-            with open(pts3d_file) as f:
-                for line in f:
-                    if line.startswith('#') or not line.strip():
-                        continue
-                    parts = line.strip().split()
-                    if len(parts) >= 7:
-                        try:
-                            x,y,z = float(parts[1]),float(parts[2]),float(parts[3])
-                            r2,g,b = int(parts[4]),int(parts[5]),int(parts[6])
-                            points.append([x,y,z])
-                            colors.append([r2/255,g/255,b/255])
-                        except: pass
-
-        if len(points) < 6:
-            raise Exception(f'Poucos pontos gerados ({len(points)}). Use mais frames com boa iluminação.')
-
-        pts  = np.array(points)
-        cols = np.array(colors)
-
-        # ── PASSO 6: Remove outliers ──
-        _update(sid, 80, 'Removendo outliers...')
-        center = pts.mean(axis=0)
-        dists  = np.linalg.norm(pts - center, axis=1)
-        mask   = dists < (dists.mean() + 2.5 * dists.std())
-        pts    = pts[mask]
-        cols   = cols[mask]
-
-        # ── PASSO 7: Densifica nuvem ──
-        _update(sid, 85, 'Densificando nuvem de pontos...')
-        pts, cols = _densify(pts, cols)
-
-        # ── PASSO 8: Normaliza ──
-        center = pts.mean(axis=0)
-        pts   -= center
-        scale  = np.percentile(np.abs(pts), 95)
-        if scale > 0:
-            pts /= scale
-
-        # ── PASSO 9: Gera STL ──
-        _update(sid, 92, 'Gerando malha 3D...')
-        stl_path = None
+    data = request.get_json(silent=True) or {}
+    sid = valid_sid(data.get('session_id'))
+    s = scan_get(sid)
+    if not s:
+        return jsonify({'error': 'Sessão não encontrada'}), 404
+    if s['status'] in ('processing', 'queued'):
+        return jsonify({'status': s['status']})
+    if (s['frames'] or 0) < MIN_FRAMES:
+        return jsonify({'error': f'Mínimo {MIN_FRAMES} frames. Você tem {s["frames"] or 0}.'}), 400
+    if 'marker_mm' in data:
         try:
-            stl_path = _make_mesh(pts, cols, base)
-        except: pass
+            scan_set(sid, marker_mm=float(data['marker_mm']) or None)
+        except (TypeError, ValueError):
+            pass
+    scan_set(sid, status='queued', progress=2, msg='Na fila...', error=None)
+    socketio.start_background_task(_job, sid)
+    return jsonify({'status': 'queued'})
 
-        # ── PASSO 10: Salva resultado ──
-        _update(sid, 97, 'Salvando resultado...')
-        result = {
-            'session_name': sess['name'],
-            'points':       pts.tolist(),
-            'colors':       cols.tolist(),
-            'point_count':  len(pts),
-            'frame_count':  len(sess['frames']),
-            'method':       'COLMAP SfM + Dense',
-            'has_stl':      stl_path is not None
-        }
-        with open(os.path.join(base, 'result.json'), 'w') as f:
-            json.dump(result, f)
 
-        sess['status'] = 'done'
-        sess['points'] = len(pts)
-        _update(sid, 100, f'Concluído! {len(pts):,} pontos 3D gerados.')
-        socketio.emit('scan_done', {'session_id': sid, 'point_count': len(pts)})
+def _update(sid, progress, msg, status=None):
+    kw = {'progress': int(progress), 'msg': msg}
+    if status:
+        kw['status'] = status
+    scan_set(sid, **kw)
+    socketio.emit('progress', {'session_id': sid, 'progress': int(progress), 'msg': msg}, to=sid)
 
-    except Exception as e:
-        sess['status'] = 'error'
-        sess['error']  = str(e)
-        _update(sid, 0, 'Erro: ' + str(e)[:100])
-        socketio.emit('scan_error', {'session_id': sid, 'error': str(e)})
 
-def _densify(pts, cols, factor=3):
-    """Densifica a nuvem interpolando entre vizinhos próximos"""
-    if len(pts) < 4:
-        return pts, cols
-    try:
-        k   = min(5, len(pts)-1)
-        nbrs = NearestNeighbors(n_neighbors=k).fit(pts)
-        _, idxs = nbrs.kneighbors(pts)
-        new_pts, new_cols = [pts], [cols]
-        for i in range(len(pts)):
-            for j in idxs[i][1:3]:
-                for t in [0.33, 0.67]:
-                    np_ = pts[i]*(1-t) + pts[j]*t
-                    nc_ = cols[i]*(1-t) + cols[j]*t
-                    new_pts.append(np_.reshape(1,3))
-                    new_cols.append(nc_.reshape(1,3))
-        p = np.vstack(new_pts)
-        c = np.vstack(new_cols)
-        # Remove duplicatas
-        uniq = np.unique(p.round(4), axis=0)
-        nbrs2 = NearestNeighbors(n_neighbors=1).fit(pts)
-        _, idx2 = nbrs2.kneighbors(uniq)
-        c2 = cols[idx2.flatten()]
-        return uniq, c2
-    except:
-        return pts, cols
+def _job(sid):
+    with _job_sem:
+        s = scan_get(sid)
+        _update(sid, 5, 'Iniciando COLMAP...', status='processing')
+        try:
+            res = pipeline.reconstruct(sdir(sid), s['frames'], s['marker_mm'],
+                                       lambda p, m: _update(sid, p, m))
+            msg = f'Concluído! {res["point_count"]:,} pontos'.replace(',', '.')
+            msg += ' · malha OK' if res['has_mesh'] else f' · sem malha ({res["mesh_msg"]})'
+            if res['units'] != 'mm':
+                msg += ' · sem escala'
+            scan_set(sid, status='done', progress=100, msg=msg, points=res['point_count'],
+                     units=res['units'], has_mesh=int(res['has_mesh']))
+            socketio.emit('progress', {'session_id': sid, 'progress': 100, 'msg': msg}, to=sid)
+            socketio.emit('scan_done', {'session_id': sid, 'point_count': res['point_count']}, to=sid)
+        except Exception as e:
+            err = str(e)
+            scan_set(sid, status='error', progress=0, error=err, msg='Erro')
+            socketio.emit('scan_error', {'session_id': sid, 'error': err}, to=sid)
 
-def _make_mesh(pts, cols, base_dir):
-    """Gera malha STL via Convex Hull + suavização"""
-    if len(pts) < 4:
-        return None
-    hull = ConvexHull(pts)
-    mesh = trimesh.Trimesh(vertices=pts[hull.vertices], faces=hull.simplices)
-    trimesh.smoothing.filter_laplacian(mesh, iterations=5)
-    path = os.path.join(base_dir, 'model.stl')
-    mesh.export(path)
-    return path
 
-# ── STATUS ─────────────────────────────────────────────────────────────────────
+# ── CONSULTAS ──────────────────────────────────────────────────────────────────
 @app.route('/api/scan/status/<sid>')
 def scan_status(sid):
-    if sid not in sessions:
+    s = scan_get(valid_sid(sid))
+    if not s:
         return jsonify({'error': 'Não encontrado'}), 404
-    s = sessions[sid]
-    return jsonify({
-        'status':   s.get('status'),
-        'progress': s.get('progress', 0),
-        'msg':      s.get('msg', ''),
-        'points':   s.get('points', 0),
-        'error':    s.get('error')
-    })
+    return jsonify({k: s[k] for k in ('status', 'progress', 'msg', 'points', 'error', 'frames')})
 
-# ── RESULTADO ──────────────────────────────────────────────────────────────────
+
 @app.route('/api/scan/result/<sid>')
 def scan_result(sid):
-    path = os.path.join(DATA_DIR, sid, 'result.json')
+    path = os.path.join(sdir(valid_sid(sid)), 'result.json')
     if not os.path.exists(path):
         return jsonify({'error': 'Resultado não disponível'}), 404
+    s = scan_get(sid) or {}
     with open(path) as f:
-        return jsonify(json.load(f))
+        res = json.load(f)
+    res['session_name'] = s.get('name')
+    res['patient'] = s.get('patient')
+    return jsonify(res)
 
-# ── DOWNLOAD STL ───────────────────────────────────────────────────────────────
+
 @app.route('/api/scan/stl/<sid>')
 def download_stl(sid):
-    path = os.path.join(DATA_DIR, sid, 'model.stl')
+    path = os.path.join(sdir(valid_sid(sid)), 'model.stl')
     if not os.path.exists(path):
         return jsonify({'error': 'STL não disponível'}), 404
-    return send_file(path, as_attachment=True, download_name=f'scan_{sid}.stl')
+    s = scan_get(sid) or {}
+    nome = re.sub(r'[^\w\-]+', '_', f"{s.get('patient') or ''}_{s.get('name') or sid}").strip('_')
+    return send_file(path, as_attachment=True, download_name=f'{nome or sid}.stl')
 
-# ── LISTA ──────────────────────────────────────────────────────────────────────
+
+@app.route('/api/scan/mesh/<sid>')
+def download_mesh(sid):
+    path = os.path.join(sdir(valid_sid(sid)), 'mesh.ply')
+    if not os.path.exists(path):
+        return jsonify({'error': 'Malha não disponível'}), 404
+    return send_file(path, mimetype='application/octet-stream')
+
+
 @app.route('/api/scans/list')
 def list_scans():
-    result = []
-    for sid, s in sessions.items():
-        if s.get('status') == 'done':
-            result.append({
-                'id':      sid,
-                'name':    s.get('name'),
-                'frames':  len(s.get('frames', [])),
-                'points':  s.get('points', 0),
-                'created': s.get('created')
-            })
-    return jsonify(sorted(result, key=lambda x: x['created'], reverse=True))
+    patient = request.args.get('patient')
+    q, args = 'SELECT * FROM scans', ()
+    if patient:
+        q, args = q + ' WHERE patient=?', (patient,)
+    with _db_lock, db() as c:
+        rows = [dict(r) for r in c.execute(q + ' ORDER BY created DESC LIMIT 300', args)]
+    return jsonify(rows)
+
+
+@app.route('/api/scan/<sid>', methods=['DELETE'])
+def delete_scan(sid):
+    s = scan_get(valid_sid(sid))
+    if not s:
+        return jsonify({'error': 'Não encontrado'}), 404
+    if s['status'] in ('processing', 'queued'):
+        return jsonify({'error': 'Aguarde terminar o processamento'}), 409
+    shutil.rmtree(sdir(sid), ignore_errors=True)
+    with _db_lock, db() as c:
+        c.execute('DELETE FROM scans WHERE id=?', (sid,))
+    return jsonify({'ok': True})
+
+
+# ── ODONTOGRAMA ────────────────────────────────────────────────────────────────
+@app.route('/api/odontograma/<path:patient>', methods=['GET', 'PUT'])
+def odontograma(patient):
+    patient = patient.strip()[:80]
+    if not patient:
+        abort(400)
+    if request.method == 'GET':
+        with _db_lock, db() as c:
+            r = c.execute('SELECT data FROM odontograma WHERE patient=?', (patient,)).fetchone()
+        return jsonify(json.loads(r['data']) if r else {})
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        abort(400)
+    with _db_lock, db() as c:
+        c.execute('INSERT INTO odontograma(patient,data,updated) VALUES(?,?,?) '
+                  'ON CONFLICT(patient) DO UPDATE SET data=excluded.data, updated=excluded.updated',
+                  (patient, json.dumps(data), time.time()))
+    return jsonify({'ok': True})
+
 
 # ── WEBSOCKET ──────────────────────────────────────────────────────────────────
-@socketio.on('connect')
-def on_connect():
-    emit('connected', {'status': 'ok'})
+@socketio.on('join')
+def on_join(data):
+    sid = (data or {}).get('session_id')
+    if sid and SID_RE.match(sid):
+        join_room(sid)
+
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5050))
-    print(f"OdontoScan 3D — Porta {port} — Railway: {IS_RAILWAY}")
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    print(f'OdontoScan 3D — porta {port} — Railway: {IS_RAILWAY}')
+    print(f'Dados: {DATA_DIR}')
+    print(f'COLMAP: {pipeline.colmap_info()}')
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)

@@ -13,3 +13,8 @@ venv/
 .venv/
 node_modules/
 *.log
+
+# COLMAP / malha (gerados)
+*.npz
+mesh_info.json
+cloudflared.exe

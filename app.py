@@ -11,16 +11,6 @@ from flask_socketio import SocketIO, join_room
 
 import pipeline
 
-# Open3D é usado para reconstrução de superfície de alta qualidade
-# (Poisson) e limpeza estatística de outliers. Import defensivo: se por
-# algum motivo não estiver disponível no ambiente, o sistema cai
-# automaticamente no método antigo (Convex Hull) sem quebrar.
-try:
-    import open3d as o3d
-    HAS_OPEN3D = True
-except Exception:
-    HAS_OPEN3D = False
-
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or uuid.uuid4().hex
 app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024   # por requisição (1 frame)
@@ -90,18 +80,6 @@ def sdir(sid):
 
 
 db_init()
-
-
-
-def _rebuild_frame_cache(sid):
-    """Reconstrói o cache de frames de uma sessão a partir do disco."""
-    img_dir = os.path.join(DATA_DIR, sid, 'images')
-    if not os.path.isdir(img_dir):
-        sessions[sid] = []
-        return
-    files = sorted(f for f in os.listdir(img_dir) if f.lower().endswith('.jpg'))
-    sessions[sid] = [os.path.join(img_dir, f) for f in files]
-
 
 
 # ── FRONTEND ───────────────────────────────────────────────────────────────────
